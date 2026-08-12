@@ -21,7 +21,7 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
            (pointerup)="endPan($event)" (pointercancel)="endPan($event)">
         @if (displaySrc) {
           <img [src]="displaySrc" [alt]="alt" draggable="false" decoding="async"
-               (error)="retryImage()"
+               (error)="retryImage()" (load)="onImageLoad($event, viewport)"
                [style.transform]="imageTransform" (click)="$event.stopPropagation()" />
         } @else {
           <div class="loading">Loading full image…</div>
@@ -38,9 +38,17 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
                 overflow: hidden; touch-action: none; cursor: default; }
     .viewport.zoomed { cursor: grab; }
     .viewport.dragging { cursor: grabbing; }
-    img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain;
-          user-select: none; pointer-events: auto; transform-origin: center center;
-          will-change: transform; border-radius: 8px; box-shadow: 0 24px 80px #000b; }
+    /* The image is laid out at its native intrinsic size (no object-fit/
+       max-width shrink) so Blink always rasterizes it at full resolution;
+       ALL display scaling -- both the initial fit-to-viewport and any
+       zoom-in -- happens via the single scale() in imageTransform
+       (zoom * baseScale), computed in JS once natural size is known. Fitting
+       via object-fit plus a separate transform scale() zoom on top of it
+       (the previous approach) meant zooming magnified an already
+       down-rasterized layer, visibly softer than the source at high zoom. */
+    img { display: block; user-select: none; pointer-events: auto;
+          transform-origin: center center; will-change: transform;
+          border-radius: 8px; box-shadow: 0 24px 80px #000b; }
     .toolbar { position: fixed; z-index: 2; top: 16px; left: 50%; transform: translateX(-50%);
                display: flex; align-items: center; gap: 4px; padding: 5px;
                border: 1px solid #ffffff2e; border-radius: 14px; background: #101827e8;
@@ -73,6 +81,16 @@ export class ZoomableLightboxComponent implements OnChanges {
   panX = 0;
   panY = 0;
   dragging = false;
+  // Scale that fits the image's native size to the viewport (what
+  // object-fit:contain used to compute for us). Defaults to 1 (native size,
+  // same as a plain unstyled <img>) until onImageLoad reports real
+  // dimensions and corrects it -- naturalWidth/Height (and so layout/paint)
+  // can be available before the `load` event fires, so this must never be 0
+  // or the image is invisible (scale(0)) for that window.
+  baseScale = 1;
+  private naturalWidth = 0;
+  private naturalHeight = 0;
+  private viewportEl: HTMLElement | null = null;
   private pointerId: number | null = null;
   private dragX = 0;
   private dragY = 0;
@@ -82,6 +100,26 @@ export class ZoomableLightboxComponent implements OnChanges {
     if (!changes['src']) return;
     this.displaySrc = this.src;
     this.imageRetries = 0;
+    this.baseScale = 1;
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
+  }
+
+  onImageLoad(event: Event, viewportEl: HTMLElement) {
+    const img = event.target as HTMLImageElement;
+    this.naturalWidth = img.naturalWidth;
+    this.naturalHeight = img.naturalHeight;
+    this.viewportEl = viewportEl;
+    this.recomputeBaseScale();
+  }
+
+  @HostListener('window:resize')
+  onResize() { this.recomputeBaseScale(); }
+
+  private recomputeBaseScale() {
+    if (!this.viewportEl || !this.naturalWidth || !this.naturalHeight) return;
+    const { clientWidth, clientHeight } = this.viewportEl;
+    this.baseScale = Math.min(clientWidth / this.naturalWidth, clientHeight / this.naturalHeight, 1) || 1;
   }
 
   retryImage() {
@@ -96,7 +134,7 @@ export class ZoomableLightboxComponent implements OnChanges {
 
   get zoomPercent(): number { return Math.round(this.zoom * 100); }
   get imageTransform(): string {
-    return `translate3d(${this.panX}px, ${this.panY}px, 0) scale(${this.zoom})`;
+    return `translate3d(${this.panX}px, ${this.panY}px, 0) scale(${this.zoom * this.baseScale})`;
   }
 
   zoomBy(factor: number) { this.setZoom(this.zoom * factor); }
