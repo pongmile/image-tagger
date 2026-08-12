@@ -50,7 +50,7 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
         # own tooling. A downloaded app does not inherit this flag, and leaving
         # it set makes the packaged executable exit before Electron starts.
         app_env.pop("ELECTRON_RUN_AS_NODE", None)
-        app_env["IMAGE_TAGGER_HOME"] = app_home
+        app_env["IMAGE_TAGGER_HOME"] = str(app_home)
         app_env["IMAGE_TAGGER_PACKAGE_SMOKE"] = "1"
         launched = subprocess.run(
             [str(executable)], cwd=cwd, env=app_env,
