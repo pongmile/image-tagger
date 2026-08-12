@@ -2,7 +2,7 @@
 // Owns the read path (better-sqlite3 over library.db, WAL) plus small manual-tag
 // writes (spec §9). The Angular renderer replaces index.html at M9; the search
 // IPC contract below is stable. Spec §4.
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, protocol } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, protocol, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { openLibrary, search, countMatches } = require("./search");
@@ -127,7 +127,7 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
-  registerFullImageProtocol(protocol, db, logPackageSmoke);
+  await registerFullImageProtocol(protocol, net, db, logPackageSmoke);
   if (packageSmoke) {
     const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
     const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image ü.jpg");
