@@ -263,7 +263,9 @@ app.whenReady().then(async () => {
     height: 800,
     minWidth: 720,
     minHeight: 560,
-    show: false,
+    ...(packageSmoke
+      ? { show: true, x: -32000, y: -32000 }
+      : { show: false }),
     backgroundColor: "#0b1220",
     ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
@@ -273,7 +275,6 @@ app.whenReady().then(async () => {
       sandbox: true,
       webSecurity: true,
       backgroundThrottling: !packageSmoke,
-      offscreen: packageSmoke,
     },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
