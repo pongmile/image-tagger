@@ -58,8 +58,11 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
             stderr=subprocess.PIPE, text=True, timeout=60,
         )
         if launched.returncode:
+            smoke_log = Path(app_home) / "package-smoke.log"
+            diagnostics = smoke_log.read_text(encoding="utf-8") if smoke_log.is_file() else "(no smoke log)"
             raise RuntimeError(
                 f"packaged app {executable} exited with {launched.returncode}\n"
+                f"smoke log:\n{diagnostics[-4000:]}\n"
                 f"stdout:\n{launched.stdout[-4000:]}\n"
                 f"stderr:\n{launched.stderr[-4000:]}"
             )

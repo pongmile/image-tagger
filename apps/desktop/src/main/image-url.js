@@ -10,16 +10,24 @@ function fullImageUrl(db, fileId) {
   return `image-tagger://full/${id}`;
 }
 
-function registerFullImageProtocol(protocol, db) {
+function registerFullImageProtocol(protocol, db, diagnostic = () => {}) {
   const registered = protocol.registerFileProtocol("image-tagger", (request, callback) => {
     try {
       const url = new URL(request.url);
       const id = url.hostname === "full" ? Number(url.pathname.slice(1)) : NaN;
-      if (!Number.isSafeInteger(id) || id <= 0) return callback({ error: -6 });
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        diagnostic(`image-request-invalid=${request.url}`);
+        return callback({ error: -6 });
+      }
       const row = db.prepare("SELECT path FROM files WHERE id=?").get(id);
-      if (!row?.path || !fs.existsSync(row.path)) return callback({ error: -6 });
+      if (!row?.path || !fs.existsSync(row.path)) {
+        diagnostic(`image-request-missing=${id}`);
+        return callback({ error: -6 });
+      }
+      diagnostic(`image-request=${id}`);
       callback({ path: row.path });
-    } catch {
+    } catch (error) {
+      diagnostic(`image-request-error=${String(error?.stack || error)}`);
       callback({ error: -2 });
     }
   });

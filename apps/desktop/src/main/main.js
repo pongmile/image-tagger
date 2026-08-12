@@ -127,7 +127,7 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
-  registerFullImageProtocol(protocol, db);
+  registerFullImageProtocol(protocol, db, logPackageSmoke);
   if (packageSmoke) {
     const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
     const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image ü.jpg");
