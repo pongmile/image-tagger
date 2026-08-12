@@ -31,6 +31,27 @@ const allowedIndexerCommands = new Set([
 ]);
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function startIndexerAndWaitForDatabase(bridge, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("indexer database did not become ready"));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      bridge.off("db_ready", onReady);
+      bridge.off("exit", onExit);
+    };
+    const onReady = () => { cleanup(); resolve(); };
+    const onExit = (code) => {
+      cleanup();
+      reject(new Error(`indexer daemon exited during startup (${code})`));
+    };
+    bridge.once("db_ready", onReady);
+    bridge.once("exit", onExit);
+    bridge.start();
+  });
+}
 const isSqliteBusy = (error) => {
   const code = String(error?.code || "");
   const message = String(error?.message || error || "");
@@ -79,8 +100,15 @@ app.on("second-instance", () => {
   mainWindow.focus();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+
+  // Python owns schema creation and migrations. On a fresh/slow machine,
+  // opening the renderer first lets its initial IPC reads race the migration
+  // and fail with "no such table". Do not expose the Node read connection or
+  // load Angular until the daemon confirms database startup is complete.
+  indexer = new IndexerBridge({ auto: true });
+  await startIndexerAndWaitForDatabase(indexer);
   db = openLibrary();
 
   // Read path (hot) --------------------------------------------------------
@@ -153,7 +181,6 @@ app.whenReady().then(() => {
 
   // Python indexer bridge (spec §4): spawn the daemon, forward its progress
   // events to the renderer, and expose a generic control call + semantic search.
-  indexer = new IndexerBridge({ auto: true }).start();
   const forward = (channel) => (payload) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send(channel, payload);

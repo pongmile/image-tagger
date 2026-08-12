@@ -1117,6 +1117,10 @@ def main(argv=None) -> None:
         pass
     con = db.connect()
     recovered = db.recover_interrupted_jobs(con)
+    # Electron may open the same library immediately on first launch. Signal
+    # as soon as schema creation/migrations are committed; full model preload
+    # can continue before the later general-purpose `ready` event.
+    _emit({"event": "db_ready"})
 
     # Facets already enabled from a previous run must be safe before the auto
     # worker sees its first queued image. Learned tags may use Scipy/sklearn
