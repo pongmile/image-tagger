@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- M2 placeholder renderer. Replaced by the Angular app at M9. Exercises the
+     full IPC contract: live-count search (§8.1), the v1 query grammar, and
+     manual tag add/remove with a preview pane (§8.2/§9). -->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Image Tagger</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; display: grid;
+           grid-template-rows: auto 1fr; height: 100vh; }
+    header { padding: .6rem 1rem; border-bottom: 1px solid #8883; }
+    #q { width: 100%; font-size: 1.2rem; padding: .5rem .7rem; box-sizing: border-box; }
+    #count { font-size: .85rem; opacity: .7; margin-top: .3rem; }
+    main { display: grid; grid-template-columns: 1fr 320px; overflow: hidden; }
+    #results { overflow: auto; margin: 0; padding: 0; list-style: none; }
+    #results li { padding: .35rem 1rem; border-bottom: 1px solid #8882; cursor: pointer;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #results li.sel { background: #3b82f633; }
+    #results .fn { font-weight: 600; }
+    #results .fo { opacity: .55; font-size: .8rem; }
+    aside { border-left: 1px solid #8883; padding: 1rem; overflow: auto; }
+    .tag { display: inline-block; padding: .1rem .5rem; margin: .15rem; border-radius: 1rem;
+           font-size: .8rem; background: #8883; }
+    .tag.manual { background: #22c55e55; }
+    .tag.path { background: #f59e0b55; }
+    .tag button { border: 0; background: none; cursor: pointer; margin-left: .3rem; opacity: .6; }
+    .cat { font-size: .7rem; text-transform: uppercase; opacity: .5; margin-top: .6rem; }
+    input.add { width: 100%; box-sizing: border-box; margin-top: .8rem; padding: .35rem; }
+    .hint { opacity: .5; font-size: .75rem; margin-top: .4rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <input id="q" placeholder="search…  try:  miku   character:&quot;hatsune miku&quot;   folder:D:/Pictures   -draft" autofocus />
+    <div id="count"></div>
+    <div class="hint">grammar: bare words · cat:value · person:name · folder:&lt;path&gt; · -exclude</div>
+  </header>
+  <main>
+    <ul id="results"></ul>
+    <aside id="preview"><div class="hint">select a result to see tags</div></aside>
+  </main>
+  <script>
+    const q = document.getElementById("q");
+    const results = document.getElementById("results");
+    const count = document.getElementById("count");
+    const preview = document.getElementById("preview");
+    let selId = null, t;
+
+    q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 80); });
+
+    async function run() {
+      const query = q.value.trim();
+      if (!query) { results.innerHTML = ""; count.textContent = ""; return; }
+      const [rows, total] = await Promise.all([
+        window.api.search(query, { limit: 500 }),
+        window.api.count(query),
+      ]);
+      count.textContent = `${total.toLocaleString()} results` +
+        (total > rows.length ? ` (showing ${rows.length})` : "");
+      results.innerHTML = rows.map(r =>
+        `<li data-id="${r.id}"><span class="fn">${esc(r.filename || "")}</span>
+         <span class="fo"> — ${esc(r.folder || "")}</span></li>`).join("");
+      for (const li of results.children)
+        li.onclick = () => selectFile(Number(li.dataset.id), li);
+    }
+
+    async function selectFile(id, li) {
+      selId = id;
+      for (const el of results.children) el.classList.toggle("sel", el === li);
+      renderTags(await window.api.tags(id));
+    }
+
+    function renderTags(tags) {
+      const byCat = {};
+      for (const t of tags) (byCat[t.category] ||= []).push(t);
+      let html = "";
+      for (const cat of Object.keys(byCat).sort()) {
+        html += `<div class="cat">${esc(cat)}</div>`;
+        for (const t of byCat[cat])
+          html += `<span class="tag ${t.source}">${esc(t.name)}` +
+            `<button title="remove" data-cat="${esc(cat)}" data-name="${esc(t.name)}">×</button></span>`;
+      }
+      html += `<input class="add" placeholder="add tag as  category:name  (enter)" />`;
+      preview.innerHTML = html;
+      for (const b of preview.querySelectorAll(".tag button"))
+        b.onclick = async () => renderTags(
+          await window.api.removeTag(selId, b.dataset.cat, b.dataset.name));
+      const add = preview.querySelector(".add");
+      add.onkeydown = async (e) => {
+        if (e.key !== "Enter") return;
+        const [cat, ...rest] = add.value.split(":");
+        const name = rest.join(":").trim();
+        if (cat && name)
+          renderTags(await window.api.addTag(selId, cat.trim(), name));
+      };
+    }
+
+    const esc = (s) => String(s).replace(/[&<>"]/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  </script>
+</body>
+</html>

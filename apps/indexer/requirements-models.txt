@@ -1,0 +1,28 @@
+# Installed on demand by the model manager (M3+). Pin at implementation
+# time after verifying against current docs — do not blind-install.
+
+# M3 — OCR (§10). PP-OCR detection+recognition via onnxruntime; bundles small
+# CPU-capable models, no paddlepaddle runtime. Swap for paddleocr (PP-OCRv5 with
+# the dedicated Thai model) behind the same OcrEngine interface for stronger Thai.
+rapidocr-onnxruntime==1.4.4
+
+# M5 — CLIP zero-shot scene/clothing (§5) + semantic search / learned-tag store (§8/§5.3).
+open_clip_torch==3.3.0     # CLIP image/text encoders (pulls torch)
+# torch                    # install the CPU or CUDA build to match your tier (§5.2):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+sqlite-vec==0.1.9          # vec0 embedding store + KNN (soft dep; semantic search optional)
+
+# M6 — InsightFace real faces (§5). Detection + ArcFace embeddings (buffalo_l
+# pack, ~300 MB, downloaded on first use) via onnxruntime.
+insightface==0.7.3
+
+# M7 — few-shot learned tags (§5.3). Linear head over frozen CLIP/face embeddings;
+# trains in ms on CPU. Optional — without it, learned tags use a centroid prototype.
+scikit-learn==1.7.2
+
+# M8 — captioning (§11). BLIP via transformers; swappable per library.
+transformers==5.15.0       # (torch installed above for M5)
+accelerate==1.14.0
+
+# Later milestones:
+# onnxruntime-gpu OR onnxruntime-directml   # GPU execution providers (§5.2)

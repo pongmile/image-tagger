@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: Renderer and Electron integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/renderer/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/indexer/requirements.txt
+      - run: npm ci
+      - run: npm ci --prefix apps/desktop/renderer
+      - run: python -m pip install -r apps/indexer/requirements.txt
+      - run: npm run build:renderer
+      - run: xvfb-run -a npm run test:electron
+      - run: npm audit --omit=dev
+      - run: npm audit --prefix apps/desktop/renderer
+
+  indexer:
+    name: Python indexer and search gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/indexer/requirements.txt
+      - run: python -m pip install -r apps/indexer/requirements.txt sqlite-vec scikit-learn
+      - run: python -m compileall -q apps/indexer
+      - run: python scripts/run_python_tests.py
+      - run: python scripts/bench_search.py --rows 100000 --db "${{ runner.temp }}/bench.db"

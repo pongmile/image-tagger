@@ -1,0 +1,58 @@
+name: Windows release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/renderer/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - run: npm ci --prefix apps/desktop/renderer
+      - name: Build installer and portable ZIP
+        run: npm run dist:win
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem apps/desktop/dist/Image-Tagger-*-win-x64.exe,apps/desktop/dist/Image-Tagger-*-win-x64.zip
+          $lines = foreach ($file in $artifacts) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding ascii apps/desktop/dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-tagger-windows-x64
+          path: |
+            apps/desktop/dist/Image-Tagger-*-win-x64.exe
+            apps/desktop/dist/Image-Tagger-*-win-x64.zip
+            apps/desktop/dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem apps/desktop/dist/Image-Tagger-*-win-x64.exe,apps/desktop/dist/Image-Tagger-*-win-x64.zip,apps/desktop/dist/SHA256SUMS.txt
+          gh release create "${{ github.ref_name }}" @($files.FullName) --verify-tag --generate-notes --title "Image Tagger ${{ github.ref_name }}"

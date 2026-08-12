@@ -1,0 +1,33 @@
+# Node
+node_modules/
+dist/
+out/
+*.log
+.angular/
+
+# Python
+.venv/
+apps/desktop/build/python/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# App data (never commit user libraries or models)
+*.db
+*.db-wal
+*.db-shm
+models/
+thumbs/
+.packaged-smoke-home*/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local agent/session state and machine-specific verification notes
+.claude/
+handoff.md
+ui-*.png

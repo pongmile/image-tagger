@@ -1,0 +1,10 @@
+# M2 core (no AI yet). Model deps are added per-milestone; the app's
+# model manager installs GPU/CPU onnxruntime at first run per tier.
+watchdog>=4.0,<7
+Pillow>=10.0,<13
+piexif>=1.1,<2
+
+# OCR is enabled by default, so its CPU runtime is part of the base install.
+# Larger WD14/CLIP/face/caption dependencies remain opt-in in the Models screen.
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.23.2

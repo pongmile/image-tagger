@@ -1,0 +1,32 @@
+{
+  "name": "@image-tagger/renderer",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "ng build",
+    "start": "ng serve",
+    "watch": "ng build --watch --configuration development"
+  },
+  "dependencies": {
+    "@angular/cdk": "21.2.14",
+    "@angular/common": "21.2.19",
+    "@angular/compiler": "21.2.19",
+    "@angular/core": "21.2.19",
+    "@angular/forms": "21.2.19",
+    "@angular/platform-browser": "21.2.19",
+    "rxjs": "^7.8.0",
+    "tslib": "^2.6.0",
+    "zone.js": "^0.16.2"
+  },
+  "devDependencies": {
+    "@angular/build": "21.2.20",
+    "@angular/cli": "21.2.20",
+    "@angular/compiler-cli": "21.2.19",
+    "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "undici": "7.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@hono/node-server": "2.1.0"
+  }
+}

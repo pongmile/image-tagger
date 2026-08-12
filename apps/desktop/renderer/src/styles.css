@@ -1,0 +1,63 @@
+/* Image Tagger renderer — global theme (light/dark aware). */
+:root {
+  color-scheme: light dark;
+  --bg: #f7f9fc;
+  --bg-2: #eef2f7;
+  --surface: #ffffff;
+  --fg: #182033;
+  --fg-dim: #64748b;
+  --border: #dbe3ee;
+  --accent: #6366f1;
+  --accent-2: #06b6d4;
+  --sel: #6366f120;
+  --tag: #8880;
+  --tag-manual: #22c55e33;
+  --tag-path: #f59e0b33;
+  --tag-learned: #a855f733;
+  --tag-wd14: #06b6d433;
+  --tag-clip: #ec489933;
+  --shadow: 0 1px 2px #0f172a12, 0 8px 24px #0f172a0d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1220;
+    --bg-2: #111b2d;
+    --surface: #162238;
+    --fg: #e7edf8;
+    --fg-dim: #9caec7;
+    --border: #263650;
+    --accent: #818cf8;
+    --accent-2: #22d3ee;
+    --sel: #818cf82c;
+    --shadow: 0 1px 2px #0008, 0 10px 30px #0004;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  letter-spacing: -.005em;
+}
+button {
+  font: inherit; font-size: 13px; font-weight: 500; color: inherit; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 13px;
+  cursor: pointer; transition: background .12s, border-color .12s, opacity .12s, box-shadow .12s;
+}
+button:hover:not(:disabled) { border-color: var(--accent); background: var(--sel); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: .55; cursor: default; }
+input, select {
+  font: inherit; color: inherit; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;
+}
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 75%, white);
+  outline-offset: 2px;
+}
+::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg-dim) 40%, transparent); border: 3px solid transparent; background-clip: padding-box; border-radius: 999px; }

@@ -1,0 +1,56 @@
+{
+  "name": "@image-tagger/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Everything-fast local image search with AI auto-tagging.",
+  "author": "Image Tagger",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "node ../../scripts/run-electron.js .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis zip --x64",
+    "postinstall": "electron-builder install-app-deps",
+    "test:smoke": "node ../../scripts/run-electron.js smoke.js",
+    "test:ui": "node ../../scripts/run-electron.js win-smoke.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.10.0"
+  },
+  "devDependencies": {
+    "electron": "41.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "dev.imagetagger.app",
+    "productName": "Image Tagger",
+    "electronVersion": "41.10.3",
+    "artifactName": "Image-Tagger-${version}-${os}-${arch}.${ext}",
+    "files": ["src/**/*", "renderer/dist/browser/**/*", "package.json"],
+    "extraResources": [
+      { "from": "../indexer", "to": "indexer",
+        "filter": ["**/*.py", "requirements*.txt", "!**/.venv/**", "!**/__pycache__/**"] },
+      { "from": "../../packages/db", "to": "db" },
+      { "from": "build/python", "to": "python" },
+      { "from": "../../samples", "to": "samples" }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "mac": { "target": "dmg", "icon": "build/icon.png" },
+    "linux": { "target": "AppImage", "icon": "build/icon.png" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
+    "asarUnpack": ["**/*.node"]
+  }
+}
