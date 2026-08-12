@@ -2,18 +2,13 @@
 // Owns the read path (better-sqlite3 over library.db, WAL) plus small manual-tag
 // writes (spec §9). The Angular renderer replaces index.html at M9; the search
 // IPC contract below is stable. Spec §4.
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, protocol } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { openLibrary, search, countMatches } = require("./search");
 const writes = require("./writes");
 const { IndexerBridge } = require("./indexer");
-const { createFullImageProtocolHandler, fullImageUrl } = require("./image-protocol");
-
-protocol.registerSchemesAsPrivileged([{
-  scheme: "image-tagger",
-  privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
-}]);
+const { fullImageUrl } = require("./image-url");
 
 const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
 if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
@@ -127,9 +122,6 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
-  protocol.handle("image-tagger", createFullImageProtocolHandler(
-    db, (error) => logPackageSmoke(`image-stream-failure=${String(error)}`)
-  ));
   if (packageSmoke) {
     const samplePath = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
     packageSmokeImageId = Number(db.prepare(
@@ -298,7 +290,7 @@ app.whenReady().then(async () => {
           const image = new Image();
           image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
           image.onerror = () => resolve({ width: 0, height: 0 });
-          image.src = ${JSON.stringify("image-tagger://full/")} + ${JSON.stringify(packageSmokeImageId)};
+          image.src = ${JSON.stringify(fullImageUrl(db, packageSmokeImageId))};
         })`);
         if (!streamedImage.width || !streamedImage.height) {
           throw new Error("packaged full-image streaming failed");

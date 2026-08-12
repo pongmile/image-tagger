@@ -1,15 +1,10 @@
 // Windowed Electron smoke: launches a real BrowserWindow rendering the built
 // Angular app against the real preload IPC + better-sqlite3, drives a search,
 // and captures the window to a PNG. Proves the actual GUI runs. Not shipped.
-const { app, BrowserWindow, ipcMain, protocol } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
-
-protocol.registerSchemesAsPrivileged([{
-  scheme: "image-tagger",
-  privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
-}]);
 
 // Electron can outlive the shell process that launched this smoke test on
 // Windows.  Ignore only a closed output pipe; otherwise Node turns a harmless
@@ -32,7 +27,7 @@ const MODELS_SHOT = path.join(path.dirname(SHOT), `${path.parse(SHOT).name}-mode
 const { openLibrary, search, countMatches } = require("./src/main/search");
 const writes = require("./src/main/writes");
 const { IndexerBridge } = require("./src/main/indexer");
-const { createFullImageProtocolHandler, fullImageUrl } = require("./src/main/image-protocol");
+const { fullImageUrl } = require("./src/main/image-url");
 
 function createLargeBmp(filePath, width = 4096, height = 3072) {
   const rowBytes = (width * 3 + 3) & ~3;
@@ -122,7 +117,6 @@ app.whenReady().then(async () => {
   ipcMain.handle("tag:bulkRemove", (_e, ids, c, n) => writes.bulkRemoveTag(db, ids, c, n));
   ipcMain.handle("category:create", (_e, name, color) => writes.createCategory(db, name, color));
   ipcMain.handle("category:list", () => writes.listCategories(db));
-  protocol.handle("image-tagger", createFullImageProtocolHandler(db));
   ipcMain.handle("file:full", (_e, id) => fullImageUrl(db, id));
   ipcMain.handle("ocr:set", (_e, id, text) => writes.setOcrText(db, id, text));
   ipcMain.handle("file:open", () => "");
@@ -241,7 +235,7 @@ app.whenReady().then(async () => {
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           const image = document.querySelector('[data-testid=lightbox] img');
-          if (image?.src.startsWith('image-tagger:') && image.naturalWidth > 0) break;
+          if (image?.src.startsWith('file:') && image.naturalWidth > 0) break;
           await new Promise(r => setTimeout(r, 50));
         }
         const lightbox = document.querySelector('[data-testid=lightbox]');
@@ -250,7 +244,7 @@ app.whenReady().then(async () => {
         if (!lightbox || !zoomIn || !reset) return { controls: false };
         const fullImage = lightbox.querySelector('img');
         const initial = reset.textContent.trim();
-        const streamed = fullImage?.src.startsWith('image-tagger:') ?? false;
+        const streamed = fullImage?.src.startsWith('file:') ?? false;
         const naturalWidth = fullImage?.naturalWidth ?? 0;
         const renderedWidth = fullImage?.getBoundingClientRect().width ?? 0;
         zoomIn.click();
