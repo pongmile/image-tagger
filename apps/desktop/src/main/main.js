@@ -298,11 +298,19 @@ app.whenReady().then(async () => {
           const deadline = Date.now() + 10000;
           const attempt = () => {
             const image = new Image();
-            image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-            image.onerror = () => Date.now() < deadline
-              ? setTimeout(attempt, 200)
-              : resolve({ width: 0, height: 0 });
+            image.hidden = true;
+            image.onload = () => {
+              const result = { width: image.naturalWidth, height: image.naturalHeight };
+              image.remove();
+              resolve(result);
+            };
+            image.onerror = () => {
+              image.remove();
+              if (Date.now() < deadline) setTimeout(attempt, 200);
+              else resolve({ width: 0, height: 0 });
+            };
             image.src = ${JSON.stringify(fullImageUrl(db, packageSmokeImageId))};
+            document.body.appendChild(image);
           };
           attempt();
         })`);
