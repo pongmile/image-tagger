@@ -2,7 +2,7 @@
 # model manager installs GPU/CPU onnxruntime at first run per tier.
 watchdog>=4.0,<7
 Pillow>=10.0,<13
-piexif>=1.1,<2
+piexif>=1.1.3,<2
 
 # OCR is enabled by default, so its CPU runtime is part of the base install.
 # Larger WD14/CLIP/face/caption dependencies remain opt-in in the Models screen.
