@@ -18,6 +18,10 @@ DIST = ROOT / "apps" / "desktop" / "dist"
 UNPACKED = DIST / "win-unpacked"
 PYTHON = UNPACKED / "resources" / "python" / "python.exe"
 INDEXER = UNPACKED / "resources" / "indexer"
+with (ROOT / "apps" / "desktop" / "package.json").open(encoding="utf-8") as package_file:
+    VERSION = json.load(package_file)["version"]
+INSTALLER = DIST / f"Image-Tagger-{VERSION}-win-x64.exe"
+PORTABLE = DIST / f"Image-Tagger-{VERSION}-win-x64.zip"
 
 
 def require_release_files() -> None:
@@ -28,10 +32,10 @@ def require_release_files() -> None:
         UNPACKED / "resources" / "samples" / "beach-sunset-kayak.jpg",
     ]
     missing = [str(path) for path in required if not path.is_file()]
-    if not list(DIST.glob("Image-Tagger-*-win-x64.exe")):
-        missing.append("NSIS installer")
-    if not list(DIST.glob("Image-Tagger-*-win-x64.zip")):
-        missing.append("portable ZIP")
+    if not INSTALLER.is_file():
+        missing.append(str(INSTALLER))
+    if not PORTABLE.is_file():
+        missing.append(str(PORTABLE))
     if missing:
         raise FileNotFoundError("Missing packaged files: " + ", ".join(missing))
 
@@ -43,12 +47,14 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
         app_env["IMAGE_TAGGER_PACKAGE_SMOKE"] = "1"
         launched = subprocess.run(
             [str(executable)], cwd=cwd, env=app_env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=60,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, timeout=60,
         )
         if launched.returncode:
             raise RuntimeError(
-                f"packaged app {executable} exited with {launched.returncode}"
+                f"packaged app {executable} exited with {launched.returncode}\n"
+                f"stdout:\n{launched.stdout[-4000:]}\n"
+                f"stderr:\n{launched.stderr[-4000:]}"
             )
         # Electron's Windows launcher can return just before the last renderer
         # process releases its executable mapping. Wait for that handle instead
@@ -144,10 +150,9 @@ def main() -> int:
     smoke_electron_app(UNPACKED / "Image Tagger.exe", UNPACKED)
     print("packaged Electron executable: ok")
 
-    portable = next(DIST.glob("Image-Tagger-*-win-x64.zip"))
     with tempfile.TemporaryDirectory(prefix="image-tagger-portable-") as portable_root:
         portable_dir = Path(portable_root)
-        with zipfile.ZipFile(portable) as archive:
+        with zipfile.ZipFile(PORTABLE) as archive:
             archive.extractall(portable_dir)
         portable_exe = portable_dir / "Image Tagger.exe"
         if not portable_exe.is_file():
@@ -157,13 +162,12 @@ def main() -> int:
 
     # Exercise the downloadable NSIS artifact itself, including silent install,
     # first launch, and uninstall in an isolated temporary destination.
-    installer = next(DIST.glob("Image-Tagger-*-win-x64.exe"))
     with tempfile.TemporaryDirectory(
         prefix="image-tagger-installer-", ignore_cleanup_errors=True
     ) as install_root:
         install_dir = Path(install_root) / "installed"
         installed = subprocess.run(
-            [str(installer), "/S", f"/D={install_dir}"],
+            [str(INSTALLER), "/S", f"/D={install_dir}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, timeout=120,
         )

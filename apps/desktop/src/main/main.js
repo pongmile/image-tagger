@@ -11,6 +11,7 @@ const { IndexerBridge } = require("./indexer");
 
 const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
 if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
+  app.disableHardwareAcceleration();
   app.setPath("userData", path.join(process.env.IMAGE_TAGGER_HOME, "electron-profile"));
 }
 
