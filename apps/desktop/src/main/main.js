@@ -272,6 +272,8 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: !packageSmoke,
+      offscreen: packageSmoke,
     },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
