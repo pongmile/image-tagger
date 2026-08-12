@@ -41,7 +41,9 @@ def require_release_files() -> None:
 
 
 def smoke_electron_app(executable: Path, cwd: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as app_home:
+    with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as temp_root:
+        app_home = Path(temp_root) / "User Data - portable path ü"
+        app_home.mkdir()
         marker = Path(app_home) / "package-smoke-ok"
         app_env = os.environ.copy()
         # Codex/VS Code terminals can run Electron as a Node binary for their
@@ -169,7 +171,8 @@ def main() -> int:
     print("packaged Electron executable: ok")
 
     with tempfile.TemporaryDirectory(prefix="image-tagger-portable-") as portable_root:
-        portable_dir = Path(portable_root)
+        portable_dir = Path(portable_root) / "Portable App - path test ü"
+        portable_dir.mkdir()
         with zipfile.ZipFile(PORTABLE) as archive:
             archive.extractall(portable_dir)
         portable_exe = portable_dir / "Image Tagger.exe"
@@ -183,7 +186,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(
         prefix="image-tagger-installer-", ignore_cleanup_errors=True
     ) as install_root:
-        install_dir = Path(install_root) / "installed"
+        install_dir = Path(install_root) / "Image Tagger Installed ü"
         installed = subprocess.run(
             [str(INSTALLER), "/S", f"/D={install_dir}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

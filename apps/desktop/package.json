@@ -1,6 +1,6 @@
 {
   "name": "@image-tagger/desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Everything-fast local image search with AI auto-tagging.",
   "author": "Image Tagger",
@@ -26,23 +26,60 @@
     "electronVersion": "41.10.3",
     "electronDist": "node_modules/electron/dist",
     "artifactName": "Image-Tagger-${version}-${os}-${arch}.${ext}",
-    "files": ["src/**/*", "renderer/dist/browser/**/*", "package.json"],
+    "files": [
+      "src/**/*",
+      "renderer/dist/browser/**/*",
+      "package.json"
+    ],
     "extraResources": [
-      { "from": "../indexer", "to": "indexer",
-        "filter": ["**/*.py", "requirements*.txt", "!**/.venv/**", "!**/__pycache__/**"] },
-      { "from": "../../packages/db", "to": "db" },
-      { "from": "build/python", "to": "python" },
-      { "from": "../../samples", "to": "samples" }
+      {
+        "from": "../indexer",
+        "to": "indexer",
+        "filter": [
+          "**/*.py",
+          "requirements*.txt",
+          "!**/.venv/**",
+          "!**/__pycache__/**"
+        ]
+      },
+      {
+        "from": "../../packages/db",
+        "to": "db"
+      },
+      {
+        "from": "build/python",
+        "to": "python"
+      },
+      {
+        "from": "../../samples",
+        "to": "samples"
+      }
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "zip", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.ico"
     },
-    "mac": { "target": "dmg", "icon": "build/icon.png" },
-    "linux": { "target": "AppImage", "icon": "build/icon.png" },
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "build/icon.png"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -52,6 +89,8 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico"
     },
-    "asarUnpack": ["**/*.node"]
+    "asarUnpack": [
+      "**/*.node"
+    ]
   }
 }

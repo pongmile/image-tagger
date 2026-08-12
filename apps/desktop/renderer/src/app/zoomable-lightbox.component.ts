@@ -20,7 +20,7 @@ import { Component, EventEmitter, HostListener, Input, Output } from '@angular/c
            (pointerdown)="startPan($event)" (pointermove)="movePan($event)"
            (pointerup)="endPan($event)" (pointercancel)="endPan($event)">
         @if (src) {
-          <img [src]="src" [alt]="alt" draggable="false"
+          <img [src]="src" [alt]="alt" draggable="false" decoding="async"
                [style.transform]="imageTransform" (click)="$event.stopPropagation()" />
         } @else {
           <div class="loading">Loading full image…</div>
@@ -37,7 +37,7 @@ import { Component, EventEmitter, HostListener, Input, Output } from '@angular/c
                 overflow: hidden; touch-action: none; cursor: default; }
     .viewport.zoomed { cursor: grab; }
     .viewport.dragging { cursor: grabbing; }
-    img { max-width: 92vw; max-height: calc(100vh - 122px); object-fit: contain;
+    img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain;
           user-select: none; pointer-events: auto; transform-origin: center center;
           will-change: transform; border-radius: 8px; box-shadow: 0 24px 80px #000b; }
     .toolbar { position: fixed; z-index: 2; top: 16px; left: 50%; transform: translateX(-50%);

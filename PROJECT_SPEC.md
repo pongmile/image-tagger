@@ -1,11 +1,12 @@
 # Local Image Tagger & Search — Project Spec
 
-> **TL;DR (TH):** โปรแกรม desktop ที่ index รูปในเครื่อง แล้ว tag อัตโนมัติด้วย AI
-> (หน้าคนจริง / ตัวละครอนิเมะ / ท่าทาง / สถานที่ / ประเภทเสื้อผ้า ฯลฯ), แก้ tag เอง
-> และเพิ่มหมวดหมู่เองได้. Index รันแบบ auto/manual (กดแล้วรอได้), แต่ **search ต้องเร็ว
-> ระดับ Everything**. เก็บทุกอย่างใน DB ของโปรแกรมเอง (ไม่ยุ่ง XMP), local ล้วน ไม่ส่งภาพออกนอกเครื่อง.
+> **TL;DR:** A local desktop application that indexes images and applies AI tags
+> for real faces, anime characters, poses, scenes, clothing, and other facets.
+> Users can edit tags and create categories. Indexing may run automatically or
+> manually, but **search must remain Everything-fast**. All data stays in the
+> application database; original XMP is not modified and images never leave the machine.
 
-Language note: spec เขียนเป็นอังกฤษเพราะเป็น technical contract (พกพาไปให้ coding agent / tooling ต่อได้ง่ายกว่า). โน้ตภาษาไทยแทรกจุดสำคัญ.
+Language note: this specification is written entirely in English so it remains portable across development tools and contributors.
 
 ---
 
@@ -16,7 +17,7 @@ Language note: spec เขียนเป็นอังกฤษเพราะ
   - **Real human faces** → cluster identical faces into a `person`, user names them once, system remembers.
   - **Anime/illustration** → character name, series/franchise, clothing type, general booru tags.
   - **Pose** → coarse only: `standing`, `sitting`, `running`, etc. (no skeleton keypoints).
-  - **Scene / place**, **clothing type**, **general "type/ลักษณะ"** → open-vocabulary via CLIP.
+  - **Scene / place**, **clothing type**, **general characteristics** → open-vocabulary via CLIP.
   - **Text visible in the image** (signs, manga speech bubbles, screenshots, memes) → OCR, in Thai and English.
 - **Manual tagging**: user can add/remove tags on any file by hand.
 - **Path & metadata as signal**: filename, folder path, and embedded metadata (EXIF, PNG text chunks / Stable Diffusion generation params, XMP if present) are extracted at ingest and become both searchable text and a tag source.
@@ -35,7 +36,7 @@ Language note: spec เขียนเป็นอังกฤษเพราะ
 
 ## 3. Explicit Assumptions
 
-> ถ้าข้อไหนผิด แก้ก่อนเริ่ม
+> Correct invalid assumptions before implementation begins.
 
 - Library size ≤ ~500k images → **SQLite + `sqlite-vec`** is sufficient; no Postgres/pgvector.
 - Runs on a machine with an NVIDIA GPU (e.g. RTX 5070 Ti) for inference; must also degrade to CPU (onnxruntime CPU) if no GPU.

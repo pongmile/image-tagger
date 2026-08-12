@@ -2,12 +2,18 @@
 // Owns the read path (better-sqlite3 over library.db, WAL) plus small manual-tag
 // writes (spec §9). The Angular renderer replaces index.html at M9; the search
 // IPC contract below is stable. Spec §4.
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, protocol } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { openLibrary, search, countMatches } = require("./search");
 const writes = require("./writes");
 const { IndexerBridge } = require("./indexer");
+const { createFullImageProtocolHandler, fullImageUrl } = require("./image-protocol");
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: "image-tagger",
+  privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
+}]);
 
 const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
 if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
@@ -26,6 +32,7 @@ logPackageSmoke("main-start");
 let db;
 let indexer;
 let mainWindow;
+let packageSmokeImageId = null;
 
 const allowedIndexerCommands = new Set([
   "rescan", "rescan_root", "add_root", "progress", "pause", "resume",
@@ -120,6 +127,17 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
+  protocol.handle("image-tagger", createFullImageProtocolHandler(
+    db, (error) => logPackageSmoke(`image-stream-failure=${String(error)}`)
+  ));
+  if (packageSmoke) {
+    const samplePath = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
+    packageSmokeImageId = Number(db.prepare(
+      "INSERT INTO files (path,filename,folder,sha256,mime,index_status) " +
+      "VALUES (?,?,?,?,?,'done') ON CONFLICT(path) DO UPDATE SET mime=excluded.mime RETURNING id"
+    ).get(samplePath, path.basename(samplePath), path.dirname(samplePath),
+      "package-smoke-sample", "image/jpeg").id);
+  }
 
   // Read path (hot) --------------------------------------------------------
   ipcMain.handle("search", (_e, query, opts) => search(db, query, opts));
@@ -155,7 +173,9 @@ app.whenReady().then(async () => {
   ipcMain.handle("file:thumb", (_e, fileId) => writes.thumbDataUri(db, fileId));
   // Full-resolution image for the preview-pane lightbox (click-to-enlarge).
   // Loaded on demand only — not part of the search/grid hot path.
-  ipcMain.handle("file:full", (_e, fileId) => writes.fileFullDataUri(db, fileId));
+  // Return a validated streaming URL. This avoids copying 30-100 MB originals
+  // into a much larger base64 IPC payload and works regardless of drive/path.
+  ipcMain.handle("file:full", (_e, fileId) => fullImageUrl(db, fileId));
   ipcMain.handle("ocr:set", (_e, fileId, text) =>
     withSqliteRetry(() => {
       writes.setOcrText(db, fileId, text);
@@ -274,6 +294,16 @@ app.whenReady().then(async () => {
         }
         if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
         logPackageSmoke("renderer-ready");
+        const streamedImage = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+          const image = new Image();
+          image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+          image.onerror = () => resolve({ width: 0, height: 0 });
+          image.src = ${JSON.stringify("image-tagger://full/")} + ${JSON.stringify(packageSmokeImageId)};
+        })`);
+        if (!streamedImage.width || !streamedImage.height) {
+          throw new Error("packaged full-image streaming failed");
+        }
+        logPackageSmoke(`image-stream=${streamedImage.width}x${streamedImage.height}`);
         const ping = await indexer.call("ping", {});
         if (ping !== "pong") throw new Error("packaged indexer ping failed");
         logPackageSmoke("indexer-pong");

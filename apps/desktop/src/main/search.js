@@ -15,6 +15,7 @@
 // A `regex: true` option switches every free-text term to a JS-RegExp test
 // (§8.1's regex checkbox) instead of FTS/wildcard matching.
 const Database = require("better-sqlite3");
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -25,6 +26,7 @@ function openLibrary(dbPath) {
     (home
       ? path.join(home, "library.db")
       : path.join(os.homedir(), ".image-tagger", "library.db"));
+  fs.mkdirSync(path.dirname(path.resolve(p)), { recursive: true });
   const db = new Database(p, { readonly: false, fileMustExist: false });
   db.pragma("journal_mode = WAL");
   // The Python indexer is a second WAL writer. A large model can finish and
