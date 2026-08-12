@@ -41,14 +41,16 @@ def require_release_files() -> None:
 
 
 def smoke_electron_app(executable: Path, cwd: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as app_home:
+    with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as temp_root:
+        app_home = Path(temp_root) / "User Data - portable path \u00fc"
+        app_home.mkdir()
         marker = Path(app_home) / "package-smoke-ok"
         app_env = os.environ.copy()
         # Codex/VS Code terminals can run Electron as a Node binary for their
         # own tooling. A downloaded app does not inherit this flag, and leaving
         # it set makes the packaged executable exit before Electron starts.
         app_env.pop("ELECTRON_RUN_AS_NODE", None)
-        app_env["IMAGE_TAGGER_HOME"] = app_home
+        app_env["IMAGE_TAGGER_HOME"] = str(app_home)
         app_env["IMAGE_TAGGER_PACKAGE_SMOKE"] = "1"
         launched = subprocess.run(
             [str(executable)], cwd=cwd, env=app_env,
@@ -56,8 +58,11 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
             stderr=subprocess.PIPE, text=True, timeout=60,
         )
         if launched.returncode:
+            smoke_log = Path(app_home) / "package-smoke.log"
+            diagnostics = smoke_log.read_text(encoding="utf-8") if smoke_log.is_file() else "(no smoke log)"
             raise RuntimeError(
                 f"packaged app {executable} exited with {launched.returncode}\n"
+                f"smoke log:\n{diagnostics[-4000:]}\n"
                 f"stdout:\n{launched.stdout[-4000:]}\n"
                 f"stderr:\n{launched.stderr[-4000:]}"
             )
@@ -169,7 +174,8 @@ def main() -> int:
     print("packaged Electron executable: ok")
 
     with tempfile.TemporaryDirectory(prefix="image-tagger-portable-") as portable_root:
-        portable_dir = Path(portable_root)
+        portable_dir = Path(portable_root) / "Portable App - path test \u00fc"
+        portable_dir.mkdir()
         with zipfile.ZipFile(PORTABLE) as archive:
             archive.extractall(portable_dir)
         portable_exe = portable_dir / "Image Tagger.exe"
@@ -183,7 +189,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(
         prefix="image-tagger-installer-", ignore_cleanup_errors=True
     ) as install_root:
-        install_dir = Path(install_root) / "installed"
+        install_dir = Path(install_root) / "Image Tagger Installed \u00fc"
         installed = subprocess.run(
             [str(INSTALLER), "/S", f"/D={install_dir}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -203,11 +209,11 @@ def main() -> int:
             )
             if removed.returncode:
                 raise RuntimeError(f"NSIS uninstaller exited with {removed.returncode}")
-            deadline = time.time() + 30
-            while installed_exe.exists() and time.time() < deadline:
+            deadline = time.time() + 60
+            while install_dir.exists() and time.time() < deadline:
                 time.sleep(0.1)
-            if installed_exe.exists():
-                raise TimeoutError("NSIS uninstaller did not remove the installed app")
+            if install_dir.exists():
+                raise TimeoutError("NSIS uninstaller did not fully remove the installed app")
     print("NSIS silent install, launch, and uninstall: ok")
 
     print("PASS: packaged app, runtime, daemon, samples, installer and portable ZIP")

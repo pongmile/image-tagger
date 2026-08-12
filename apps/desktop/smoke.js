@@ -24,6 +24,11 @@ const check = (c, m) => { console.log((c ? "  ok  " : " FAIL ") + m); if (!c) fa
 
 app.whenReady().then(async () => {
   try {
+    const nestedDbPath = path.join(HOME, "Path With Spaces ü", "nested", "library.db");
+    const nestedDb = openLibrary(nestedDbPath);
+    nestedDb.close();
+    check(fs.existsSync(nestedDbPath), "database parent directories are created for portable paths");
+
     // 1) Spawn the daemon first so it creates the schema (db.connect runs it).
     const bridge = new IndexerBridge({
       indexerDir: path.join(__dirname, "../indexer"), auto: false,

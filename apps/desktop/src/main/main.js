@@ -2,12 +2,24 @@
 // Owns the read path (better-sqlite3 over library.db, WAL) plus small manual-tag
 // writes (spec §9). The Angular renderer replaces index.html at M9; the search
 // IPC contract below is stable. Spec §4.
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, protocol, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { openLibrary, search, countMatches } = require("./search");
 const writes = require("./writes");
 const { IndexerBridge } = require("./indexer");
+const { fullImageUrl, registerFullImageProtocol } = require("./image-url");
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: "image-tagger",
+  privileges: {
+    secure: true,
+    standard: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}]);
 
 const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
 if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
@@ -26,6 +38,7 @@ logPackageSmoke("main-start");
 let db;
 let indexer;
 let mainWindow;
+let packageSmokeImageId = null;
 
 const allowedIndexerCommands = new Set([
   "rescan", "rescan_root", "add_root", "progress", "pause", "resume",
@@ -120,6 +133,17 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
+  await registerFullImageProtocol(protocol, net, db, logPackageSmoke);
+  if (packageSmoke) {
+    const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
+    const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image \u00fc.jpg");
+    fs.copyFileSync(packagedSample, samplePath);
+    packageSmokeImageId = Number(db.prepare(
+      "INSERT INTO files (path,filename,folder,sha256,mime,index_status) " +
+      "VALUES (?,?,?,?,?,'done') ON CONFLICT(path) DO UPDATE SET mime=excluded.mime RETURNING id"
+    ).get(samplePath, path.basename(samplePath), path.dirname(samplePath),
+      "package-smoke-sample", "image/jpeg").id);
+  }
 
   // Read path (hot) --------------------------------------------------------
   ipcMain.handle("search", (_e, query, opts) => search(db, query, opts));
@@ -155,7 +179,9 @@ app.whenReady().then(async () => {
   ipcMain.handle("file:thumb", (_e, fileId) => writes.thumbDataUri(db, fileId));
   // Full-resolution image for the preview-pane lightbox (click-to-enlarge).
   // Loaded on demand only — not part of the search/grid hot path.
-  ipcMain.handle("file:full", (_e, fileId) => writes.fileFullDataUri(db, fileId));
+  // Return a validated streaming URL. This avoids copying 30-100 MB originals
+  // into a much larger base64 IPC payload and works regardless of drive/path.
+  ipcMain.handle("file:full", (_e, fileId) => fullImageUrl(db, fileId));
   ipcMain.handle("ocr:set", (_e, fileId, text) =>
     withSqliteRetry(() => {
       writes.setOcrText(db, fileId, text);
@@ -252,6 +278,7 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: !packageSmoke,
     },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -274,6 +301,21 @@ app.whenReady().then(async () => {
         }
         if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
         logPackageSmoke("renderer-ready");
+        const streamedImage = await mainWindow.webContents.executeJavaScript(`(async () => {
+          const response = await fetch(${JSON.stringify(fullImageUrl(db, packageSmokeImageId))});
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          return {
+            ok: response.ok,
+            contentType: response.headers.get("content-type"),
+            byteLength: bytes.byteLength,
+            jpeg: bytes[0] === 0xff && bytes[1] === 0xd8 &&
+              bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9,
+          };
+        })()`);
+        if (!streamedImage.ok || !streamedImage.jpeg || streamedImage.byteLength < 1024) {
+          throw new Error("packaged full-image streaming failed");
+        }
+        logPackageSmoke(`image-stream=${streamedImage.byteLength}:${streamedImage.contentType}`);
         const ping = await indexer.call("ping", {});
         if (ping !== "pong") throw new Error("packaged indexer ping failed");
         logPackageSmoke("indexer-pong");

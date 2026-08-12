@@ -1,10 +1,21 @@
 // Windowed Electron smoke: launches a real BrowserWindow rendering the built
 // Angular app against the real preload IPC + better-sqlite3, drives a search,
 // and captures the window to a PNG. Proves the actual GUI runs. Not shipped.
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, protocol, net } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: "image-tagger",
+  privileges: {
+    secure: true,
+    standard: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}]);
 
 // Electron can outlive the shell process that launched this smoke test on
 // Windows.  Ignore only a closed output pipe; otherwise Node turns a harmless
@@ -27,6 +38,30 @@ const MODELS_SHOT = path.join(path.dirname(SHOT), `${path.parse(SHOT).name}-mode
 const { openLibrary, search, countMatches } = require("./src/main/search");
 const writes = require("./src/main/writes");
 const { IndexerBridge } = require("./src/main/indexer");
+const { fullImageUrl, registerFullImageProtocol } = require("./src/main/image-url");
+
+function createLargeBmp(filePath, width = 4096, height = 3072) {
+  const rowBytes = (width * 3 + 3) & ~3;
+  const fileSize = 54 + rowBytes * height;
+  const header = Buffer.alloc(54);
+  header.write("BM", 0, "ascii");
+  header.writeUInt32LE(fileSize, 2);
+  header.writeUInt32LE(54, 10);
+  header.writeUInt32LE(40, 14);
+  header.writeInt32LE(width, 18);
+  header.writeInt32LE(height, 22);
+  header.writeUInt16LE(1, 26);
+  header.writeUInt16LE(24, 28);
+  header.writeUInt32LE(rowBytes * height, 34);
+  const fd = fs.openSync(filePath, "w");
+  try {
+    fs.ftruncateSync(fd, fileSize);
+    fs.writeSync(fd, header, 0, header.length, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return fileSize;
+}
 
 app.whenReady().then(async () => {
   // Bring up the daemon (creates schema) then seed a few rows via better-sqlite3.
@@ -57,13 +92,17 @@ app.whenReady().then(async () => {
     "SELECT id FROM files WHERE filename LIKE 'hatsune_miku%' ORDER BY id LIMIT 1"
   ).get().id;
   const sample = path.resolve(__dirname, "../../samples/anime-neon-city-heroine.webp");
+  const largeSampleDir = path.join(HOME, "Large Preview Path \u00fc");
+  fs.mkdirSync(largeSampleDir, { recursive: true });
+  const largeSample = path.join(largeSampleDir, "large preview over 30mb.bmp");
+  const largeSampleSize = createLargeBmp(largeSample);
   const sampleSha = "sample-anime";
   const thumbDir = path.join(HOME, "thumbs", sampleSha.slice(0, 2));
   fs.mkdirSync(thumbDir, { recursive: true });
   fs.copyFileSync(sample, path.join(thumbDir, `${sampleSha}.webp`));
   db.prepare(
-    "UPDATE files SET path=?,filename=?,folder=?,sha256=?,mime='image/webp',width=1280,height=853,size_bytes=? WHERE id=?"
-  ).run(sample, path.basename(sample), path.dirname(sample), sampleSha, fs.statSync(sample).size, tallPreviewId);
+    "UPDATE files SET path=?,filename=?,folder=?,sha256=?,mime='image/bmp',width=4096,height=3072,size_bytes=? WHERE id=?"
+  ).run(largeSample, path.basename(largeSample), path.dirname(largeSample), sampleSha, largeSampleSize, tallPreviewId);
   writes.refreshFts(db, tallPreviewId);
   for (let i = 1; i <= 48; i++) {
     writes.addManualTag(db, tallPreviewId, "detail", `visible-detail-${i}`);
@@ -91,7 +130,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("tag:bulkRemove", (_e, ids, c, n) => writes.bulkRemoveTag(db, ids, c, n));
   ipcMain.handle("category:create", (_e, name, color) => writes.createCategory(db, name, color));
   ipcMain.handle("category:list", () => writes.listCategories(db));
-  ipcMain.handle("file:full", (_e, id) => writes.fileFullDataUri(db, id));
+  await registerFullImageProtocol(protocol, net, db);
+  ipcMain.handle("file:full", (_e, id) => fullImageUrl(db, id));
   ipcMain.handle("ocr:set", (_e, id, text) => writes.setOcrText(db, id, text));
   ipcMain.handle("file:open", () => "");
   ipcMain.handle("file:reveal", () => undefined);
@@ -129,6 +169,10 @@ app.whenReady().then(async () => {
       preload: path.join(__dirname, "src/preload/preload.js"),
       backgroundThrottling: false,
       offscreen: !showSmoke,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
   win.loadFile(path.join(__dirname, "renderer/dist/browser/index.html"));
@@ -206,12 +250,21 @@ app.whenReady().then(async () => {
       // remains a useful review of the main layout.
       const previewZoom = await win.webContents.executeJavaScript(`(async () => {
         document.querySelector('[data-testid=thumb-img]')?.click();
-        await new Promise(r => setTimeout(r, 150));
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          const image = document.querySelector('[data-testid=lightbox] img');
+          if (image?.src.startsWith('image-tagger:') && image.naturalWidth > 0) break;
+          await new Promise(r => setTimeout(r, 50));
+        }
         const lightbox = document.querySelector('[data-testid=lightbox]');
         const zoomIn = document.querySelector('[data-testid=zoom-in]');
         const reset = document.querySelector('[data-testid=zoom-reset]');
         if (!lightbox || !zoomIn || !reset) return { controls: false };
+        const fullImage = lightbox.querySelector('img');
         const initial = reset.textContent.trim();
+        const streamed = fullImage?.src.startsWith('image-tagger:') ?? false;
+        const naturalWidth = fullImage?.naturalWidth ?? 0;
+        const renderedWidth = fullImage?.getBoundingClientRect().width ?? 0;
         zoomIn.click();
         await new Promise(r => setTimeout(r, 50));
         const buttonZoom = reset.textContent.trim();
@@ -223,7 +276,7 @@ app.whenReady().then(async () => {
         const wheelZoom = reset.textContent.trim();
         document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
         await new Promise(r => setTimeout(r, 50));
-        return { controls: true, initial, buttonZoom, wheelZoom,
+        return { controls: true, streamed, naturalWidth, renderedWidth, initial, buttonZoom, wheelZoom,
           closed: !document.querySelector('[data-testid=lightbox]') };
       })()`);
       // Capture before deliberately scrolling the preview so the artifact is a
@@ -350,7 +403,8 @@ app.whenReady().then(async () => {
         && liveProgress
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
         && feedbackScoped.controls && !feedbackScoped.stale
-        && previewZoom.controls && previewZoom.initial === '100%'
+        && previewZoom.controls && previewZoom.streamed && previewZoom.naturalWidth === 4096
+        && previewZoom.renderedWidth > 600 && previewZoom.initial === '100%'
         && previewZoom.buttonZoom === '125%' && previewZoom.wheelZoom === '120%'
         && previewZoom.closed
         && selectionOk && variantsOk && sourceScan && /unchanged/.test(sourceMessage)
