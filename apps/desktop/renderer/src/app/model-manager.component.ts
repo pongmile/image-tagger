@@ -173,7 +173,7 @@ import { DownloadProgress, Facet, FacetVariants, Variant, getApi } from './api';
     .tierline { font-size: 12px; color: var(--fg-dim); margin: 8px 2px 0; }
     .reindex { font-size: 12px; margin: 8px 0 0; padding: 8px 12px; border-radius: 8px;
                background: var(--tag-path); }
-    .vsel { margin-top: 8px; width: min(100%, 400px); font-size: 12px; }
+    .vsel { margin-top: 8px; width: 100%; max-width: 640px; font-size: 12px; }
     .pendingrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .pendingtag { font-size: 10px; text-transform: uppercase; letter-spacing: .03em;
                   color: #92400e; background: var(--tag-path); padding: 2px 8px; border-radius: 999px; }

@@ -70,6 +70,12 @@ select { appearance: none; padding-right: 34px;
                            linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
          background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
          background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+/* The OS paints a native <select>'s open option list on its own (light)
+   background regardless of our theme, so options must keep an explicit
+   dark, readable color instead of inheriting --fg — in dark mode that's
+   near-white, which is unreadable on the native popup and left every
+   non-highlighted option looking washed out / disabled. */
+select option { color: #182033; background: #fff; }
 input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--fg-dim) 78%, transparent); }
 input:not([type='checkbox']):not([type='radio']):not([type='color']):hover, select:hover, textarea:hover {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
