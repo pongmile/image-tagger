@@ -16,7 +16,7 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
-models/
+/models/
 thumbs/
 .packaged-smoke-home*/
 
