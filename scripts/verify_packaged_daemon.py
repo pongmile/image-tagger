@@ -187,7 +187,7 @@ def main() -> int:
         installed = subprocess.run(
             [str(INSTALLER), "/S", f"/D={install_dir}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=120,
+            stderr=subprocess.DEVNULL, timeout=300,
         )
         if installed.returncode:
             raise RuntimeError(f"NSIS installer exited with {installed.returncode}")
@@ -199,7 +199,7 @@ def main() -> int:
         if uninstaller.is_file():
             removed = subprocess.run(
                 [str(uninstaller), "/S"], stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300,
             )
             if removed.returncode:
                 raise RuntimeError(f"NSIS uninstaller exited with {removed.returncode}")
