@@ -42,7 +42,12 @@ def require_release_files() -> None:
 
 def smoke_electron_app(executable: Path, cwd: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as app_home:
+        marker = Path(app_home) / "package-smoke-ok"
         app_env = os.environ.copy()
+        # Codex/VS Code terminals can run Electron as a Node binary for their
+        # own tooling. A downloaded app does not inherit this flag, and leaving
+        # it set makes the packaged executable exit before Electron starts.
+        app_env.pop("ELECTRON_RUN_AS_NODE", None)
         app_env["IMAGE_TAGGER_HOME"] = app_home
         app_env["IMAGE_TAGGER_PACKAGE_SMOKE"] = "1"
         launched = subprocess.run(
@@ -53,6 +58,19 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
         if launched.returncode:
             raise RuntimeError(
                 f"packaged app {executable} exited with {launched.returncode}\n"
+                f"stdout:\n{launched.stdout[-4000:]}\n"
+                f"stderr:\n{launched.stderr[-4000:]}"
+            )
+        marker_deadline = time.time() + 60
+        while not marker.is_file() and time.time() < marker_deadline:
+            time.sleep(0.1)
+        if not marker.is_file():
+            smoke_log = Path(app_home) / "package-smoke.log"
+            diagnostics = smoke_log.read_text(encoding="utf-8") if smoke_log.is_file() else "(no smoke log)"
+            raise RuntimeError(
+                f"packaged app {executable} exited without completing its "
+                "renderer/indexer smoke test\n"
+                f"smoke log:\n{diagnostics[-4000:]}\n"
                 f"stdout:\n{launched.stdout[-4000:]}\n"
                 f"stderr:\n{launched.stderr[-4000:]}"
             )

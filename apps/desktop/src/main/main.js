@@ -14,6 +14,14 @@ if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
   app.disableHardwareAcceleration();
   app.setPath("userData", path.join(process.env.IMAGE_TAGGER_HOME, "electron-profile"));
 }
+const packageSmokeLog = packageSmoke && process.env.IMAGE_TAGGER_HOME
+  ? path.join(process.env.IMAGE_TAGGER_HOME, "package-smoke.log")
+  : null;
+function logPackageSmoke(message) {
+  if (!packageSmokeLog) return;
+  try { fs.appendFileSync(packageSmokeLog, `${message}\n`, "utf8"); } catch { /* diagnostic only */ }
+}
+logPackageSmoke("main-start");
 
 let db;
 let indexer;
@@ -91,6 +99,7 @@ function indexedPath(filePath) {
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+logPackageSmoke(`single-instance-lock=${hasSingleInstanceLock}`);
 if (!hasSingleInstanceLock) app.quit();
 
 app.on("second-instance", () => {
@@ -109,6 +118,7 @@ app.whenReady().then(async () => {
   // load Angular until the daemon confirms database startup is complete.
   indexer = new IndexerBridge({ auto: true });
   await startIndexerAndWaitForDatabase(indexer);
+  logPackageSmoke("database-ready");
   db = openLibrary();
 
   // Read path (hot) --------------------------------------------------------
@@ -251,6 +261,7 @@ app.whenReady().then(async () => {
 
   if (packageSmoke) {
     mainWindow.webContents.once("did-finish-load", async () => {
+      logPackageSmoke("renderer-finished-load");
       let exitCode = 1;
       try {
         const deadline = Date.now() + 30000;
@@ -262,10 +273,18 @@ app.whenReady().then(async () => {
           if (!rendererReady) await delay(100);
         }
         if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
+        logPackageSmoke("renderer-ready");
         const ping = await indexer.call("ping", {});
-        if (!ping?.ok || ping.result !== "pong") throw new Error("packaged indexer ping failed");
+        if (ping !== "pong") throw new Error("packaged indexer ping failed");
+        logPackageSmoke("indexer-pong");
+        fs.writeFileSync(
+          path.join(process.env.IMAGE_TAGGER_HOME, "package-smoke-ok"),
+          "renderer=ready\nindexer=pong\n",
+          "utf8"
+        );
         exitCode = 0;
       } catch (error) {
+        logPackageSmoke(`failure=${String(error?.stack || error)}`);
         console.error("Packaged app smoke failed:", error);
       } finally {
         if (indexer) await indexer.stop();
