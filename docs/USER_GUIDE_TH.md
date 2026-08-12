@@ -35,6 +35,7 @@
 - **Small/Large** แสดง thumbnail แบบ virtualized
 - คลิกเพื่อเลือก, `Shift+คลิก` เพื่อเลือกช่วง, ลากเพื่อ marquee select
 - ดับเบิลคลิกหรือกด Enter เพื่อเปิดไฟล์ต้นฉบับ
+- คลิกรูปใน preview หรือรูปตัวอย่างในหน้า People เพื่อเปิดภาพใหญ่ จากนั้นใช้ล้อเมาส์หรือปุ่ม `+`/`−` เพื่อซูม 100–800%, ลากเพื่อ pan, ดับเบิลคลิกเพื่อ reset และกด `Esc` เพื่อปิด
 - คลิกขวาเพื่อเปิดไฟล์, เปิดโฟลเดอร์, copy path, tag, re-index หรือดู properties
 
 ## 4. Tag และ learned tag
@@ -59,6 +60,12 @@ Manual tag ไม่ถูกโมเดลเขียนทับ
 - CLIP: scene/clothing/pose, semantic search และ learned-tag embedding
 - InsightFace: ตรวจจับและจัดกลุ่มใบหน้าจริง
 - Caption: สร้างคำอธิบายภาพเพื่อค้นหาด้วยภาษาธรรมชาติ
+
+Caption มี BLIP สำหรับ CPU/GPU ทั่วไป และ JoyCaption สำหรับ NVIDIA GPU โดยเฉพาะ JoyCaption จะไม่ถูกเลือกอัตโนมัติ:
+
+- **JoyCaption 4-bit**: ใช้ `bitsandbytes` NF4, VRAM ประมาณ 6 GB และดาวน์โหลดประมาณ 16 GB
+- **JoyCaption full**: ใช้ BF16, VRAM ประมาณ 17 GB และดาวน์โหลดประมาณ 16 GB
+- เลือก variant จาก dropdown → กด **download** → รอจนสำเร็จ → กด **Apply**; ไฟล์ของแต่ละ variant แยกโฟลเดอร์และไม่ต้องดาวน์โหลดซ้ำเมื่อสลับกลับ
 
 กดติดตั้ง dependency ก่อน แล้วดาวน์โหลด model/variant ที่แนะนำ การดาวน์โหลด resume ได้และเก็บไว้ใน models folder ที่เลือก โมเดลใหม่อาจต้อง **Re-index** เพื่อเติมข้อมูลให้รูปเดิม
 
@@ -86,5 +93,7 @@ Manual tag ไม่ถูกโมเดลเขียนทับ
 - Semantic ใช้ไม่ได้: ติดตั้ง/เปิด CLIP และ re-index เพื่อสร้าง embeddings
 - GPU ไม่ทำงาน: ตรวจ driver และหน้า Models; ระบบจะ fallback เป็น CPU
 - Model download ล้มเหลว: ตรวจพื้นที่ว่าง/network แล้วกด retry; partial file ไม่ถูกมองว่าเป็น model ที่สมบูรณ์
+- รูปขึ้น `0 bytes` หรืออ่านไม่ได้จาก Google Drive/OneDrive: ตั้งไฟล์เป็น **Available offline / Always keep on this device** รอ sync ให้เสร็จแล้ว Rescan โปรแกรมจะข้าม placeholder/corrupt file โดยไม่วน retry
+- รูปเสียแต่มีขนาดมากกว่า 0: เปิดด้วยโปรแกรมรูปอื่นแล้ว export เป็น JPEG/PNG/WebP ใหม่ จากนั้น Rescan; โปรแกรมไม่แก้ไขไฟล์ต้นฉบับที่เสียให้อัตโนมัติ
 - โปรแกรมเปิดซ้ำไม่ได้: เป็นพฤติกรรมตั้งใจเพื่อป้องกัน writer/process ซ้ำ หน้าต่างเดิมจะถูก focus
 - ต้องการ reset: สำรองก่อน แล้วเปลี่ยนชื่อ `%USERPROFILE%\.image-tagger`; การลบโฟลเดอร์นี้จะลบ index/tag/settings ทั้งหมด แต่ไม่ลบรูปต้นฉบับ

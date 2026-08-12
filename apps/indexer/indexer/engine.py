@@ -180,6 +180,18 @@ VARIANTS = {
          "model_id": "Salesforce/blip-image-captioning-base", "engine": "blip"},
         {"id": "blip-large", "label": "BLIP large (accurate)", "tier": "mid", "size_mb": 1900,
          "model_id": "Salesforce/blip-image-captioning-large", "engine": "blip"},
+        # Opt-in only: these share BLIP-large's tier and sort after it, so the
+        # recommendation algorithm never selects a 16 GB GPU-only model by itself.
+        {"id": "joycaption-4bit",
+         "label": "JoyCaption (open, uncensored · 4-bit, ~6GB VRAM)",
+         "tier": "mid", "size_mb": 16000,
+         "model_id": "fancyfeast/llama-joycaption-beta-one-hf-llava",
+         "engine": "joycaption", "load_in_4bit": True},
+        {"id": "joycaption",
+         "label": "JoyCaption (open, uncensored · full, ~17GB VRAM)",
+         "tier": "mid", "size_mb": 16000,
+         "model_id": "fancyfeast/llama-joycaption-beta-one-hf-llava",
+         "engine": "joycaption", "load_in_4bit": False},
     ],
 }
 _TIER_RANK = {"low": 0, "low-mid": 1, "mid": 2, "high": 3}
@@ -233,7 +245,7 @@ def variants_view(con) -> list[dict]:
     return out
 
 
-def active_model_dir(con, facet: str):
+def model_dir_for_variant(con, facet: str, variant: dict | None = None):
     """Directory for the selected variant. Variant weights often use identical
     filenames (``model.onnx``), so sharing one folder silently kept the previous
     model after a selection change. Explicit per-model env dirs retain their
@@ -244,16 +256,21 @@ def active_model_dir(con, facet: str):
     base = _db.model_dir(con, facet)
     if os.environ.get(f"IMAGE_TAGGER_{facet.upper()}_DIR"):
         return base
-    variant = selected_variant(con, facet)
+    variant = variant if variant is not None else selected_variant(con, facet)
     return base / variant["id"] if variant else base
 
 
-def model_ready_marker(con, facet: str):
+def active_model_dir(con, facet: str):
+    """Directory for the currently applied variant."""
+    return model_dir_for_variant(con, facet)
+
+
+def model_ready_marker(con, facet: str, variant: dict | None = None):
     """Variant-specific marker written only after a library-managed model was
     successfully loaded. Importing a Python dependency is not proof that its
     weights were downloaded, which was the old Models-screen false positive.
     """
-    return active_model_dir(con, facet) / ".ready"
+    return model_dir_for_variant(con, facet, variant) / ".ready"
 
 
 def facet_readiness(con=None) -> list[dict]:
@@ -296,6 +313,8 @@ def facet_readiness(con=None) -> list[dict]:
     out = []
     for facet, label, ms, mod, ckey, model_ok, dl in facets:
         dep = has(mod)
+        if facet == "caption":
+            dep = dep and has("accelerate")
         m = dep if model_ok is None and dl is None else bool(model_ok)
         ready = dep and (m if dl else True)
         state = ("ready" if ready else
@@ -303,7 +322,8 @@ def facet_readiness(con=None) -> list[dict]:
         cat = CATALOG.get(ckey, {})
         enabled = config.facet_enabled(con, facet) if facet else True
         row = {"facet": facet, "label": label, "milestone": ms,
-               "dep": mod, "dep_ok": dep,
+               "dep": "transformers + accelerate" if facet == "caption" else mod,
+               "dep_ok": dep,
                "model_ok": m, "enabled": bool(enabled), "download": dl,
                "state": state, "model_name": cat.get("name"),
                "source": cat.get("source"), "url": cat.get("url"),

@@ -27,6 +27,20 @@ from .ingest import ingest
 INFERENCE_LOCK = threading.RLock()
 
 
+def _image_is_readable(path: str) -> bool:
+    """Validate once before loading a heavyweight model.
+
+    A zero-byte cloud placeholder or corrupt source is not repaired by retrying,
+    so finish the facet job normally and leave one actionable line in the log.
+    """
+    try:
+        with open_oriented(path):
+            return True
+    except Exception as exc:
+        print(f"skipping facets for {path}: {exc}", file=sys.stderr)
+        return False
+
+
 def run_job(con, job) -> None:
     kind = job["kind"]
     fid = job["file_id"]
@@ -90,12 +104,7 @@ def _run_infer_locked(con, fid: int) -> None:
     # fixable by retrying. Check once, up front, and skip the same way
     # ingest() does: log it plainly (visible in the Sources page's indexer
     # log) and complete the job normally rather than erroring it.
-    try:
-        with open_oriented(path):
-            pass
-    except Exception as exc:
-        print(f"skipping facets for {path}: not a readable image ({exc!r})",
-              file=sys.stderr)
+    if not _image_is_readable(path):
         return
 
     # Resolve the execution provider + device from the active tier (§5.2) once.
@@ -171,6 +180,8 @@ def _run_caption(con, fid: int) -> None:
         row = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
         if row is None or not os.path.exists(row["path"]):
             return
+        if not _image_is_readable(row["path"]):
+            return
         from . import engine as engine_config
         cfg = engine_config.get_engine_config(con)
         _run_caption_facet(con, fid, row["path"], engine_config, cfg["torch_device"])
@@ -206,6 +217,8 @@ def _run_clip(con, fid: int) -> None:
     with INFERENCE_LOCK:
         row = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
         if row is None or not os.path.exists(row["path"]):
+            return
+        if not _image_is_readable(row["path"]):
             return
         from . import engine as engine_config
         cfg = engine_config.get_engine_config(con)

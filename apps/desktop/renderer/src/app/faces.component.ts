@@ -1,11 +1,13 @@
 import { Component, HostListener, signal } from '@angular/core';
 import { Person, getApi } from './api';
+import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 
 /** Faces / persons naming screen (spec §5/§15): review clusters, name one once
  * (new faces then auto-attach), merge duplicates, and preview a cluster's files. */
 @Component({
   selector: 'app-faces',
   standalone: true,
+  imports: [ZoomableLightboxComponent],
   template: `
     <div class="wrap">
       <div class="head">
@@ -75,14 +77,8 @@ import { Person, getApi } from './api';
       }
 
       @if (lightboxOpen()) {
-        <div class="lightbox" data-testid="lightbox" (click)="closeLightbox()">
-          @if (lightboxSrc(); as src) {
-            <img [src]="src" (click)="$event.stopPropagation()" />
-          } @else {
-            <div class="lbloading">loading full image…</div>
-          }
-          <button class="lbclose" (click)="closeLightbox()" title="close (Esc)">×</button>
-        </div>
+        <app-zoomable-lightbox [src]="lightboxSrc()" [alt]="selectedName()"
+                                (closed)="closeLightbox()" />
       }
     </div>
   `,
@@ -106,13 +102,6 @@ import { Person, getApi } from './api';
     .meta { color: var(--fg-dim); font-size: 12px; text-align: center; }
     .actions { display: flex; gap: 6px; }
     .actions button, .actions select { flex: 1; font-size: 12px; }
-    .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 60;
-                display: grid; place-items: center; cursor: zoom-out; }
-    .lightbox img { max-width: 92vw; max-height: 92vh; object-fit: contain; cursor: default;
-                     box-shadow: 0 8px 40px rgba(0,0,0,.5); }
-    .lightbox .lbloading { color: #fff; font-size: 14px; }
-    .lightbox .lbclose { position: fixed; top: 16px; right: 20px; font-size: 28px; line-height: 1;
-                          background: none; border: 0; color: #fff; cursor: pointer; padding: 4px 10px; }
     /* A person's files used to render as a plain block appended after the
        whole grid -- invisible without scrolling past however many of the
        (potentially 600+) cards came after the one just clicked, which read

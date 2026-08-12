@@ -91,10 +91,39 @@ def run() -> int:
     view = {row["facet"]: row["selected"] for row in engine.variants_view(con)}
     check(all(view[key] == value for key, value in choices.items()),
           "best/accurate model choices survive a fresh status read")
+    joy4 = engine.variant_by_id("caption", "joycaption-4bit")
+    joy_full = engine.variant_by_id("caption", "joycaption")
+    check(bool(joy4 and joy4["engine"] == "joycaption" and joy4["load_in_4bit"]),
+          "JoyCaption 4-bit variant is present and quantized")
+    check(bool(joy_full and joy_full["engine"] == "joycaption"
+               and not joy_full["load_in_4bit"]),
+          "JoyCaption full-precision variant is present")
+    check(engine.recommended_variant_id("caption", "mid") == "blip-large",
+          "JoyCaption remains explicit opt-in, never auto-recommended")
+
+    # Downloading a pending variant must write into that variant's directory,
+    # not the currently applied model's folder. Otherwise Apply appears to lose
+    # a successful multi-GB download.
+    original_warm = daemon._warm_engine
+    original_dependency_install = daemon._dependency_install_worker
+    daemon._warm_engine = lambda *_args, **_kwargs: True
+    daemon._dependency_install_worker = lambda _facet: daemon._download_update(
+        "dep:joycaption", state="done", ok=True)
+    try:
+        daemon._download_worker("caption", "joycaption-4bit")
+    finally:
+        daemon._warm_engine = original_warm
+        daemon._dependency_install_worker = original_dependency_install
+    check(engine.model_ready_marker(con, "caption", joy4).exists(),
+          "pending variant download writes its own ready marker")
+    check(not engine.model_ready_marker(con, "caption").exists(),
+          "pending download does not mark applied variant ready")
     daemon._download_update("unit-model", state="running", pct=42,
                             indeterminate=False, message="testing")
     status = daemon.handle(con, {"id": 1, "cmd": "download_status"})
-    check(status["ok"] and status["result"]["downloads"][0]["pct"] == 42,
+    saved_download = next((row for row in status["result"]["downloads"]
+                           if row["model"] == "unit-model"), None)
+    check(status["ok"] and saved_download is not None and saved_download["pct"] == 42,
           "download status can be restored after reopening Models")
 
     # --- errored-job retry (§7) -------------------------------------------
@@ -110,6 +139,24 @@ def run() -> int:
     check(con.execute("SELECT index_status FROM files WHERE id=?", (fid,)
                       ).fetchone()["index_status"] == "pending",
           "retry resets file status to pending")
+
+    # Empty cloud placeholders and corrupt sources are not model failures.
+    # Standalone CLIP/caption backfills must complete rather than creating a
+    # permanent error/retry loop before either heavyweight model is loaded.
+    from indexer import worker
+    for filename, payload in (("empty.jpg", b""), ("corrupt.jpg", b"not an image")):
+        bad = tmp / filename
+        bad.write_bytes(payload)
+        con.execute("INSERT INTO files (path, sha256, index_status) VALUES (?, ?, 'done')",
+                    (str(bad), filename))
+        bad_id = con.execute("SELECT id FROM files WHERE path=?", (str(bad),)).fetchone()["id"]
+        for kind in ("clip", "caption"):
+            jid = db.enqueue_job(con, bad_id, kind)
+            job = con.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+            worker.run_job(con, job)
+            state = con.execute("SELECT state, error FROM jobs WHERE id=?", (jid,)).fetchone()
+            check(state["state"] == "done" and not state["error"],
+                  f"{kind} skips {filename} without retryable error")
 
     # Auto facets may agree on a tag name, but must not rewrite provenance from
     # another source (especially a user's manual tag).

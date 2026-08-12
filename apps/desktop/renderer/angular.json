@@ -23,7 +23,14 @@
           },
           "configurations": {
             "production": {
-              "optimization": true,
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": true
+              },
               "outputHashing": "none",
               "budgets": [
                 { "type": "initial", "maximumWarning": "2mb", "maximumError": "5mb" }

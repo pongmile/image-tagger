@@ -22,6 +22,7 @@ fs.rmSync(HOME, { recursive: true, force: true });
 process.env.IMAGE_TAGGER_HOME = HOME;
 app.setPath("userData", path.join(HOME, "electron-profile"));
 const SHOT = process.env.SMOKE_SHOT || path.join(HOME, "window.png");
+const MODELS_SHOT = path.join(path.dirname(SHOT), `${path.parse(SHOT).name}-models.png`);
 
 const { openLibrary, search, countMatches } = require("./src/main/search");
 const writes = require("./src/main/writes");
@@ -200,6 +201,31 @@ app.whenReady().then(async () => {
         await new Promise(r => setTimeout(r, 100));
         return { controls: true, stale };
       })()`);
+      // Every full-size preview uses the shared zoom/pan viewer. Verify the
+      // control path and wheel path, then close it so the UI screenshot below
+      // remains a useful review of the main layout.
+      const previewZoom = await win.webContents.executeJavaScript(`(async () => {
+        document.querySelector('[data-testid=thumb-img]')?.click();
+        await new Promise(r => setTimeout(r, 150));
+        const lightbox = document.querySelector('[data-testid=lightbox]');
+        const zoomIn = document.querySelector('[data-testid=zoom-in]');
+        const reset = document.querySelector('[data-testid=zoom-reset]');
+        if (!lightbox || !zoomIn || !reset) return { controls: false };
+        const initial = reset.textContent.trim();
+        zoomIn.click();
+        await new Promise(r => setTimeout(r, 50));
+        const buttonZoom = reset.textContent.trim();
+        reset.click();
+        const viewport = lightbox.querySelector('.viewport');
+        viewport?.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100,
+          clientX: innerWidth / 2, clientY: innerHeight / 2 }));
+        await new Promise(r => setTimeout(r, 50));
+        const wheelZoom = reset.textContent.trim();
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+        await new Promise(r => setTimeout(r, 50));
+        return { controls: true, initial, buttonZoom, wheelZoom,
+          closed: !document.querySelector('[data-testid=lightbox]') };
+      })()`);
       // Capture before deliberately scrolling the preview so the artifact is a
       // useful full-window visual review, not a scrolled implementation detail.
       const img = await win.webContents.capturePage();
@@ -241,6 +267,7 @@ app.whenReady().then(async () => {
       console.log(`  selection=${JSON.stringify(selection)}`);
       console.log(`  collapsible=${JSON.stringify(collapsible)}`);
       console.log(`  feedbackScoped=${JSON.stringify(feedbackScoped)}`);
+      console.log(`  previewZoom=${JSON.stringify(previewZoom)}`);
       console.log(`  liveProgress=${JSON.stringify({ live58, live59, ok: liveProgress })}`);
 
       // Re-enter Models: selected best/accurate variants must remain selected.
@@ -252,7 +279,19 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 1200));
       const variantsAfterReopen = await win.webContents.executeJavaScript(
         `[...document.querySelectorAll('[data-testid=variant-select]')].map(x => x.value)`);
+      const modelControlStyles = await win.webContents.executeJavaScript(`(() => {
+        const select = document.querySelector('[data-testid=variant-select]');
+        const input = document.querySelector('app-model-manager .dir input');
+        const button = document.querySelector('app-model-manager .top button');
+        const pick = (el) => { const s = getComputedStyle(el); return {
+          radius: s.borderRadius, height: s.height, appearance: s.appearance } };
+        return { select: pick(select), input: pick(input), button: pick(button) };
+      })()`);
+      const modelsImage = await win.webContents.capturePage();
+      fs.writeFileSync(MODELS_SHOT, modelsImage.toPNG());
       console.log(`  variants=${JSON.stringify(variantsAfterReopen)}`);
+      console.log(`  models screenshot: ${MODELS_SHOT}`);
+      console.log(`  modelControlStyles=${JSON.stringify(modelControlStyles)}`);
 
       // Sources exposes a scan button for each enabled include root.
       await win.webContents.executeJavaScript(`document.querySelector('[data-testid=tab-sources]').click()`);
@@ -311,6 +350,9 @@ app.whenReady().then(async () => {
         && liveProgress
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
         && feedbackScoped.controls && !feedbackScoped.stale
+        && previewZoom.controls && previewZoom.initial === '100%'
+        && previewZoom.buttonZoom === '125%' && previewZoom.wheelZoom === '120%'
+        && previewZoom.closed
         && selectionOk && variantsOk && sourceScan && /unchanged/.test(sourceMessage)
         && responsiveOk && rowsAfterRescan === 0;
       console.log(ok ? "RESULT: PASS — Electron window renders the Angular app with live data"

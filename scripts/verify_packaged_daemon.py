@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 
@@ -33,6 +34,35 @@ def require_release_files() -> None:
         missing.append("portable ZIP")
     if missing:
         raise FileNotFoundError("Missing packaged files: " + ", ".join(missing))
+
+
+def smoke_electron_app(executable: Path, cwd: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as app_home:
+        app_env = os.environ.copy()
+        app_env["IMAGE_TAGGER_HOME"] = app_home
+        app_env["IMAGE_TAGGER_PACKAGE_SMOKE"] = "1"
+        launched = subprocess.run(
+            [str(executable)], cwd=cwd, env=app_env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=60,
+        )
+        if launched.returncode:
+            raise RuntimeError(
+                f"packaged app {executable} exited with {launched.returncode}"
+            )
+        # Electron's Windows launcher can return just before the last renderer
+        # process releases its executable mapping. Wait for that handle instead
+        # of racing TemporaryDirectory cleanup or the NSIS uninstaller.
+        deadline = time.time() + 20
+        while True:
+            try:
+                descriptor = os.open(executable, os.O_RDWR)
+                os.close(descriptor)
+                break
+            except PermissionError:
+                if time.time() >= deadline:
+                    raise TimeoutError(f"packaged app did not release {executable}")
+                time.sleep(0.1)
 
 
 def main() -> int:
@@ -108,7 +138,57 @@ def main() -> int:
                 finally:
                     process.wait(timeout=10)
 
-    print("PASS: packaged runtime, daemon, samples, installer and portable ZIP")
+    # Launch the actual packaged Electron executable with its bundled renderer,
+    # preload, native better-sqlite3 module, and Python daemon. The opt-in smoke
+    # flag keeps the window hidden and exits after Angular + daemon ping.
+    smoke_electron_app(UNPACKED / "Image Tagger.exe", UNPACKED)
+    print("packaged Electron executable: ok")
+
+    portable = next(DIST.glob("Image-Tagger-*-win-x64.zip"))
+    with tempfile.TemporaryDirectory(prefix="image-tagger-portable-") as portable_root:
+        portable_dir = Path(portable_root)
+        with zipfile.ZipFile(portable) as archive:
+            archive.extractall(portable_dir)
+        portable_exe = portable_dir / "Image Tagger.exe"
+        if not portable_exe.is_file():
+            raise FileNotFoundError(f"portable ZIP did not contain {portable_exe}")
+        smoke_electron_app(portable_exe, portable_dir)
+    print("portable ZIP extraction and launch: ok")
+
+    # Exercise the downloadable NSIS artifact itself, including silent install,
+    # first launch, and uninstall in an isolated temporary destination.
+    installer = next(DIST.glob("Image-Tagger-*-win-x64.exe"))
+    with tempfile.TemporaryDirectory(
+        prefix="image-tagger-installer-", ignore_cleanup_errors=True
+    ) as install_root:
+        install_dir = Path(install_root) / "installed"
+        installed = subprocess.run(
+            [str(installer), "/S", f"/D={install_dir}"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=120,
+        )
+        if installed.returncode:
+            raise RuntimeError(f"NSIS installer exited with {installed.returncode}")
+        installed_exe = install_dir / "Image Tagger.exe"
+        if not installed_exe.is_file():
+            raise FileNotFoundError(f"NSIS did not install {installed_exe}")
+        smoke_electron_app(installed_exe, install_dir)
+        uninstaller = install_dir / "Uninstall Image Tagger.exe"
+        if uninstaller.is_file():
+            removed = subprocess.run(
+                [str(uninstaller), "/S"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+            )
+            if removed.returncode:
+                raise RuntimeError(f"NSIS uninstaller exited with {removed.returncode}")
+            deadline = time.time() + 30
+            while installed_exe.exists() and time.time() < deadline:
+                time.sleep(0.1)
+            if installed_exe.exists():
+                raise TimeoutError("NSIS uninstaller did not remove the installed app")
+    print("NSIS silent install, launch, and uninstall: ok")
+
+    print("PASS: packaged app, runtime, daemon, samples, installer and portable ZIP")
     return 0
 
 

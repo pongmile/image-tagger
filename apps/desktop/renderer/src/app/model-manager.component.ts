@@ -141,23 +141,29 @@ import { DownloadProgress, Facet, FacetVariants, Variant, getApi } from './api';
     .top { display: flex; align-items: flex-start; gap: 18px; }
     h2 { margin: 0; }
     .saved { color: var(--fg-dim); font-size: 12px; margin-top: 3px; }
-    .saved code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; }
+    .saved code { background: var(--bg-2); padding: 3px 8px; border-radius: 8px; }
     .dir { margin-left: auto; display: flex; flex-direction: column; gap: 3px; }
     .dir label { color: var(--fg-dim); font-size: 11px; } .dir input { width: 260px; }
-    .banner { display: flex; align-items: center; gap: 14px; margin: 14px 0 4px;
-              padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
-              background: var(--bg-2); font-size: 13px; }
+    .banner { display: flex; align-items: center; gap: 14px; margin: 18px 0 6px;
+              padding: 16px 18px; border: 1px solid var(--border); border-radius: var(--radius-card);
+              background: linear-gradient(135deg, var(--surface), var(--bg-2));
+              box-shadow: var(--shadow); font-size: 13px; }
     .banner.ok { color: var(--fg-dim); }
-    .notice { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px;
-              background: var(--bg-2); font-size: 12px; white-space: pre-wrap; }
+    .notice { margin: 12px 0 0; padding: 12px 15px; border-radius: 14px;
+              border: 1px solid var(--border); background: var(--bg-2);
+              box-shadow: var(--shadow-control); font-size: 12px; white-space: pre-wrap; }
     .banner .primary { margin-left: auto; background: var(--accent); color: #fff; border: 0;
-                       padding: 8px 14px; border-radius: 8px; white-space: nowrap; }
-    .table-scroll { width: 100%; overflow-x: auto; }
-    table { width: 100%; min-width: 900px; border-collapse: collapse; margin-top: 12px; }
+                       padding: 9px 16px; border-radius: 12px; white-space: nowrap; }
+    .table-scroll { width: 100%; overflow-x: auto; margin-top: 14px; border: 1px solid var(--border);
+                    border-radius: var(--radius-card); background: var(--surface); box-shadow: var(--shadow); }
+    table { width: 100%; min-width: 900px; border-collapse: collapse; }
     th { text-align: left; font-size: 11px; text-transform: uppercase; color: var(--fg-dim);
-         border-bottom: 1px solid var(--border); padding: 6px 8px; }
-    td { padding: 10px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+         border-bottom: 1px solid var(--border); padding: 12px 14px; background: var(--bg-2); }
+    td { padding: 14px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
          vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr { transition: background .15s; }
+    tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
     .lbl { font-weight: 600; } .ms { color: var(--fg-dim); font-size: 11px; }
     .toggle { display: inline-flex; align-items: center; gap: 5px; margin-top: 5px;
               color: var(--fg-dim); font-size: 11px; cursor: pointer; }
@@ -167,20 +173,21 @@ import { DownloadProgress, Facet, FacetVariants, Variant, getApi } from './api';
     .tierline { font-size: 12px; color: var(--fg-dim); margin: 8px 2px 0; }
     .reindex { font-size: 12px; margin: 8px 0 0; padding: 8px 12px; border-radius: 8px;
                background: var(--tag-path); }
-    .vsel { margin-top: 6px; max-width: 320px; font-size: 12px; padding: 5px 7px; }
+    .vsel { margin-top: 8px; width: min(100%, 400px); font-size: 12px; }
     .pendingrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .pendingtag { font-size: 10px; text-transform: uppercase; letter-spacing: .03em;
                   color: #92400e; background: var(--tag-path); padding: 2px 8px; border-radius: 999px; }
-    .apply { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 7px;
+    .apply { font-size: 12px; font-weight: 700; padding: 7px 14px; border-radius: 10px;
              background: var(--accent); color: #fff; border: 1px solid transparent; }
     .apply:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
     .mn { font-weight: 500; } .src { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
     .src a { color: var(--accent); }
-    .kind { font-size: 10px; padding: 0 5px; border-radius: 4px; margin-left: 6px; }
+    .kind { font-size: 10px; padding: 2px 7px; border-radius: 999px; margin-left: 6px; }
     .k-direct { background: var(--tag-wd14); } .k-library { background: var(--tag-clip); }
     .k-pip { background: var(--bg); border: 1px solid var(--border); }
     .size { white-space: nowrap; color: var(--fg-dim); }
-    .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--bg-2); }
+    .badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600;
+             padding: 4px 10px; border-radius: 999px; background: var(--bg-2); }
     .s-ready { background: var(--tag-manual); } .s-model { background: var(--tag-path); }
     .s-dep { background: var(--tag-clip); }
     .act { min-width: 170px; } .dim { color: var(--fg-dim); font-size: 12px; }
@@ -209,7 +216,7 @@ import { DownloadProgress, Facet, FacetVariants, Variant, getApi } from './api';
       background: repeating-linear-gradient(45deg, var(--accent) 0 8px, transparent 8px 16px);
       animation: slide 1s linear infinite; }
     .loadingtext { margin-top: 8px; }
-    .errbanner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 12px;
+    .errbanner { margin-top: 14px; padding: 13px 16px; border-radius: 14px; font-size: 12px;
                  background: color-mix(in srgb, #ef4444 15%, var(--bg-2));
                  border: 1px solid color-mix(in srgb, #ef4444 40%, var(--border));
                  display: flex; align-items: center; gap: 10px; }

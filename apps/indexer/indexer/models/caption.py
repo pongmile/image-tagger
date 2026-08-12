@@ -79,12 +79,12 @@ class JoyCaptionEngine(CaptionEngine):
     name = "joycaption"
 
     SYSTEM_PROMPT = "You are a helpful image captioner."
-    USER_PROMPT = "Write a detailed description for this image."
+    USER_PROMPT = "Write a long descriptive caption for this image in a formal tone."
 
     def __init__(self, model_id="fancyfeast/llama-joycaption-beta-one-hf-llava",
-                 cache_dir=None, device="cpu", max_new_tokens=256,
+                 cache_dir=None, device="cpu", max_new_tokens=512,
                  load_in_4bit=False):
-        if device == "cpu":
+        if not device.startswith("cuda"):
             raise RuntimeError(
                 "JoyCaption requires a CUDA GPU (~17GB VRAM, or ~6GB with "
                 "4-bit quantization) — it is far too slow on CPU. Use a BLIP "
@@ -95,18 +95,15 @@ class JoyCaptionEngine(CaptionEngine):
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.processor = AutoProcessor.from_pretrained(model_id, cache_dir=cache_dir)
-        kwargs: dict = {"cache_dir": cache_dir}
+        kwargs: dict = {"cache_dir": cache_dir, "device_map": 0}
         if load_in_4bit:
             from transformers import BitsAndBytesConfig
             kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4")
-            kwargs["device_map"] = device
         else:
             kwargs["torch_dtype"] = torch.bfloat16
         self.model = LlavaForConditionalGeneration.from_pretrained(model_id, **kwargs)
-        if not load_in_4bit:
-            self.model = self.model.to(device)
         self.model.eval()
 
     def caption(self, path):
@@ -123,9 +120,18 @@ class JoyCaptionEngine(CaptionEngine):
         if "pixel_values" in inputs:
             inputs["pixel_values"] = inputs["pixel_values"].to(self._torch.bfloat16)
         with self._torch.no_grad():
-            out = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+            out = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=True,
+                suppress_tokens=None,
+                use_cache=True,
+                temperature=0.6,
+                top_p=0.9,
+            )
         text = self.processor.tokenizer.decode(
-            out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+            out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True,
+            clean_up_tokenization_spaces=False)
         return text.strip()
 
 

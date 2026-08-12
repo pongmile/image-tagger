@@ -1,6 +1,6 @@
 {
   "name": "@image-tagger/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Everything-fast local image search with AI auto-tagging.",
   "author": "Image Tagger",
@@ -24,6 +24,7 @@
     "appId": "dev.imagetagger.app",
     "productName": "Image Tagger",
     "electronVersion": "41.10.3",
+    "electronDist": "node_modules/electron/dist",
     "artifactName": "Image-Tagger-${version}-${os}-${arch}.${ext}",
     "files": ["src/**/*", "renderer/dist/browser/**/*", "package.json"],
     "extraResources": [

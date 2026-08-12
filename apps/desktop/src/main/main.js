@@ -9,6 +9,11 @@ const { openLibrary, search, countMatches } = require("./search");
 const writes = require("./writes");
 const { IndexerBridge } = require("./indexer");
 
+const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
+if (packageSmoke && process.env.IMAGE_TAGGER_HOME) {
+  app.setPath("userData", path.join(process.env.IMAGE_TAGGER_HOME, "electron-profile"));
+}
+
 let db;
 let indexer;
 let mainWindow;
@@ -213,8 +218,33 @@ app.whenReady().then(() => {
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => { if (!packageSmoke) mainWindow?.show(); });
   mainWindow.loadFile(rendererIndex());
+
+  if (packageSmoke) {
+    mainWindow.webContents.once("did-finish-load", async () => {
+      let exitCode = 1;
+      try {
+        const deadline = Date.now() + 30000;
+        let rendererReady = false;
+        while (Date.now() < deadline && !rendererReady) {
+          rendererReady = await mainWindow.webContents.executeJavaScript(
+            "Boolean(document.querySelector('app-root')?.textContent?.includes('Image Tagger'))"
+          );
+          if (!rendererReady) await delay(100);
+        }
+        if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
+        const ping = await indexer.call("ping", {});
+        if (!ping?.ok || ping.result !== "pong") throw new Error("packaged indexer ping failed");
+        exitCode = 0;
+      } catch (error) {
+        console.error("Packaged app smoke failed:", error);
+      } finally {
+        if (indexer) await indexer.stop();
+        app.exit(exitCode);
+      }
+    });
+  }
 }).catch((error) => {
   console.error(error);
   dialog.showErrorBox("Image Tagger could not start", String(error?.stack || error));

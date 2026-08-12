@@ -658,7 +658,7 @@ def _preload_model_runtime(model: str) -> None:
         "clip": ("numpy", "torch", "open_clip"),
         "faces": ("numpy", "onnxruntime", "insightface"),
         "insightface": ("numpy", "onnxruntime", "insightface"),
-        "caption": ("numpy", "torch", "transformers"),
+        "caption": ("numpy", "torch", "transformers", "accelerate"),
         "sklearn": ("numpy", "scipy", "sklearn"),
     }.get(model, ())
     for module in modules:
@@ -678,7 +678,7 @@ def _start_download(model: str, variant_id: str | None = None) -> dict:
 
 
 def _start_dependency_install(facet: str) -> dict:
-    allowed = {"ocr", "wd14", "clip", "faces", "caption", "sklearn"}
+    allowed = {"ocr", "wd14", "clip", "faces", "caption", "joycaption", "sklearn"}
     if facet not in allowed:
         raise ValueError(f"unknown facet '{facet}'")
     key = f"dep:{facet}"
@@ -746,7 +746,7 @@ def _dependency_install_worker(facet: str) -> None:
     # Torch and ONNX Runtime wheels carry their own CUDA runtime. Do not use the
     # machine's stale CUDA_PATH: install one verified CUDA 12.8 stack for modern
     # NVIDIA cards, with CPU wheels as the universal fallback.
-    torch_needs_install = facet in ("clip", "caption") and (
+    torch_needs_install = facet in ("clip", "caption", "joycaption") and (
         not installed("torch") or (gpu and not cuda_torch_installed())
     )
     if torch_needs_install:
@@ -770,7 +770,11 @@ def _dependency_install_worker(facet: str) -> None:
         "clip": ([] if installed("open_clip") else ["open_clip_torch==3.3.0"])
                 + ([] if installed("sqlite_vec") else ["sqlite-vec==0.1.9"]),
         "faces": [] if installed("insightface") else ["insightface==0.7.3"],
-        "caption": [] if installed("transformers") else ["transformers==5.15.0", "accelerate==1.14.0"],
+        "caption": (([] if installed("transformers") else ["transformers==5.15.0"])
+                    + ([] if installed("accelerate") else ["accelerate==1.14.0"])),
+        "joycaption": (([] if installed("transformers") else ["transformers==5.15.0"])
+                       + ([] if installed("accelerate") else ["accelerate==1.14.0"])
+                       + ([] if installed("bitsandbytes") else ["bitsandbytes==0.49.2"])),
         "sklearn": [] if installed("sklearn") else ["scikit-learn==1.7.2"],
     }[facet]
     if specs:
@@ -826,7 +830,8 @@ def _dependency_install_worker(facet: str) -> None:
                     "wd14": ["onnxruntime"],
                     "clip": ["torch", "open_clip", "sqlite_vec"],
                     "faces": ["insightface", "onnxruntime"],
-                    "caption": ["torch", "transformers"],
+                    "caption": ["torch", "transformers", "accelerate"],
+                    "joycaption": ["torch", "transformers", "accelerate", "bitsandbytes"],
                     "sklearn": ["sklearn"],
                 }[facet]
                 checks = [f"import {module}" for module in required]
@@ -870,9 +875,6 @@ def _download_worker(model: str, variant_id: str | None = None) -> None:
     import os
     con = db.connect(check_same_thread=False)
     from . import engine
-    dest = engine.active_model_dir(con, model)
-    os.makedirs(dest, exist_ok=True)
-    ok, err = True, None
     # A caller can name a specific variant to fetch its weights without
     # applying it (§12 Models UX: Download and Apply are separate actions —
     # "just looking" at a bigger/uncensored model must never silently make it
@@ -880,6 +882,25 @@ def _download_worker(model: str, variant_id: str | None = None) -> None:
     # matching the old always-download-the-applied-variant behavior.
     applied = engine.selected_variant(con, model)
     variant = engine.variant_by_id(model, variant_id) if variant_id else applied
+    if variant_id and variant is None:
+        _download_finish(model, False, error=f"unknown {model} variant '{variant_id}'",
+                         message="Model download failed")
+        return
+    if model == "caption" and variant and variant.get("load_in_4bit"):
+        import importlib.util
+        if importlib.util.find_spec("bitsandbytes") is None:
+            _dependency_install_worker("joycaption")
+            dep = _download_get("dep:joycaption") or {}
+            if dep.get("state") != "done":
+                _download_finish(
+                    model, False,
+                    error=dep.get("error") or "JoyCaption 4-bit runtime installation failed",
+                    message="Model dependency installation failed",
+                )
+                return
+    dest = engine.model_dir_for_variant(con, model, variant)
+    os.makedirs(dest, exist_ok=True)
+    ok, err = True, None
     is_applied = variant is not None and applied is not None and variant.get("id") == applied.get("id")
     _download_progress(model, state="running", phase="preparing",
                        message=f"Preparing {model} in {dest}", dir=str(dest),
@@ -914,16 +935,17 @@ def _download_worker(model: str, variant_id: str | None = None) -> None:
                 download(model, dest, on_progress=on_prog)
             else:
                 ok, err = False, f"unknown model '{model}'"
+        if ok:
+            if model in ("clip", "insightface", "caption"):
+                marker = engine.model_ready_marker(con, model, variant)
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("ready\n", encoding="utf-8")
         if ok and is_applied:
             # The ready marker and caption auto-enable/backfill below are
             # "this is now usable" side effects — only correct when the
             # variant just fetched is actually the applied one. Downloading a
             # variant the user is merely evaluating must not flip readiness
             # state for the applied variant, and must not touch enablement.
-            if model in ("clip", "insightface", "caption"):
-                marker = engine.model_ready_marker(con, model)
-                marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("ready\n", encoding="utf-8")
             if model == "caption":
                 # Downloading a caption model with no prior toggle is an
                 # unambiguous "I want descriptions" signal — auto-enable the

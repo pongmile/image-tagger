@@ -9,6 +9,8 @@ Release สำหรับผู้ใช้ทั่วไปเป็น Windo
 - `Image-Tagger-<version>-win-x64.exe` — ตัวติดตั้ง แนะนำสำหรับผู้ใช้ทั่วไป
 - `Image-Tagger-<version>-win-x64.zip` — portable แตก ZIP แล้วเปิด `Image Tagger.exe`
 
+ดาวน์โหลดได้จาก [GitHub Releases](https://github.com/pongmile/image-tagger/releases/latest) โดยไม่ต้องติดตั้ง Node.js, Python, CUDA Toolkit หรือ Visual Studio
+
 ติดตั้งแล้วเปิดโปรแกรม ไปที่ **Sources → Add folder → Rescan** จากนั้นเริ่มค้นหาได้ทันที ระบบ OCR พื้นฐานรวมอยู่ในโปรแกรม ส่วนโมเดล AI ขนาดใหญ่ติดตั้งเพิ่มจากหน้า **Models** ตามต้องการ
 
 > Release ที่ build เองและยังไม่ได้ code-sign อาจแสดง Windows SmartScreen ให้ตรวจ SHA-256 ใน `SHA256SUMS.txt` ก่อนเปิด ห้ามปิด antivirus หรือดาวน์โหลด build จากแหล่งที่ไม่เชื่อถือ
@@ -26,7 +28,13 @@ Release สำหรับผู้ใช้ทั่วไปเป็น Windo
 - Internet: ใช้เฉพาะตอนดาวน์โหลดโมเดลเสริม
 - ผู้ใช้ปลายทางไม่ต้องลง Node.js, Python, CUDA Toolkit หรือ Visual Studio
 
-พื้นที่โมเดลขึ้นกับตัวเลือก: WD14 ประมาณ 0.3–1.4 GB, CLIP ประมาณ 0.34–3.9 GB, InsightFace 0.1–0.33 GB และ caption model ประมาณ 1–16 GB
+พื้นที่โมเดลขึ้นกับตัวเลือก: WD14 ประมาณ 0.3–1.4 GB, CLIP ประมาณ 0.34–3.9 GB, InsightFace 0.1–0.33 GB, BLIP 1–1.9 GB และ JoyCaption ประมาณ 16 GB (ควรมีพื้นที่เผื่อ cache อย่างน้อย 20 GB)
+
+JoyCaption เป็นโมเดลเสริมแบบ opt-in และไม่ถูกเลือกอัตโนมัติ:
+
+- `JoyCaption 4-bit`: Windows 11 x64, NVIDIA GPU รุ่น Pascal/GTX 10-series ขึ้นไป, VRAM ประมาณ 6 GB, RAM 16 GB+
+- `JoyCaption full`: NVIDIA GPU ที่รองรับ BF16, VRAM ประมาณ 17 GB, RAM 32 GB+
+- เครื่อง CPU-only ให้ใช้ BLIP; โปรแกรมจะไม่พยายามรัน JoyCaption บน CPU จนเครื่องค้าง
 
 ## วิธีใช้แบบเร็ว
 
@@ -34,7 +42,7 @@ Release สำหรับผู้ใช้ทั่วไปเป็น Windo
 2. เพิ่ม exclude folder/pattern หากไม่ต้องการ index โฟลเดอร์ชั่วคราว
 3. กด **Rescan** และรอแถบ indexing เป็น `idle`
 4. ใช้ช่องค้นหา เช่น `beach`, `character:"hatsune miku"`, `folder:travel !draft`
-5. เลือกรูปเพื่อดู preview, OCR, metadata, face และ tag; ดับเบิลคลิกเพื่อเปิดไฟล์ต้นฉบับ
+5. เลือกรูปเพื่อดู preview, OCR, metadata, face และ tag; คลิกรูป preview เพื่อเปิดภาพใหญ่ ใช้ล้อเมาส์หรือปุ่ม +/− เพื่อซูม และลากเพื่อเลื่อนภาพ
 6. เปิด **Models** เมื่อต้องการ WD14, semantic search, face recognition หรือ captioning
 
 ตัวอย่างภาพที่แจกพร้อม repository อยู่ใน [`samples/`](samples/) สามารถเพิ่มโฟลเดอร์นี้เป็น Source เพื่อทดลองระบบได้
@@ -78,7 +86,7 @@ Release สำหรับผู้ใช้ทั่วไปเป็น Windo
 - Visual Studio Build Tools + workload “Desktop development with C++” เฉพาะกรณี native module ไม่มี prebuilt binary
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/pongmile/image-tagger.git
 cd image-tagger
 npm run setup
 npm test

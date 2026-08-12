@@ -1,7 +1,8 @@
-import { Component, HostListener, computed, effect, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { LibraryService } from './library.service';
 import { TagRow } from './api';
+import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 
 /** Preview pane (§8.2): larger render placeholder + all tags grouped by
  * category and colored by source, with inline add/remove. Faces/persons and
@@ -9,7 +10,7 @@ import { TagRow } from './api';
 @Component({
   selector: 'app-preview',
   standalone: true,
-  imports: [DecimalPipe],
+  imports: [DecimalPipe, ZoomableLightboxComponent],
   template: `
     @let id = lib.selectedId();
     @if (id == null) {
@@ -30,14 +31,8 @@ import { TagRow } from './api';
       }
 
       @if (lightboxOpen()) {
-        <div class="lightbox" data-testid="lightbox" (click)="closeLightbox()">
-          @if (lightboxSrc(); as src) {
-            <img [src]="src" (click)="$event.stopPropagation()" />
-          } @else {
-            <div class="lbloading">loading full image…</div>
-          }
-          <button class="lbclose" (click)="closeLightbox()" title="close (Esc)">×</button>
-        </div>
+        <app-zoomable-lightbox [src]="lightboxSrc()" [alt]="file()?.filename || ''"
+                                (closed)="closeLightbox()" />
       }
 
       @let d = lib.detail();
@@ -186,20 +181,15 @@ import { TagRow } from './api';
                          color: var(--fg-dim); cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
     .head .meta .reidx:hover:not(:disabled) { background: var(--sel); color: var(--fg); border-color: var(--accent); }
     .head .meta .reidx:disabled { opacity: .6; cursor: default; }
-    .thumb { margin: 10px 0; width: 100%; max-height: 240px; object-fit: contain;
-             background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; }
+    .thumb { margin: 12px 0; width: 100%; max-height: 240px; object-fit: contain;
+             background: var(--bg-2); border: 1px solid var(--border); border-radius: 16px;
+             box-shadow: var(--shadow); }
     .thumb:not(.ph) { cursor: zoom-in; }
     .thumb.ph { height: 150px; display: grid; place-items: center; border-style: dashed;
                 color: var(--fg-dim); font-size: 12px; text-align: center; padding: 8px; }
-    .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 50;
-                display: grid; place-items: center; cursor: zoom-out; }
-    .lightbox img { max-width: 92vw; max-height: 92vh; object-fit: contain; cursor: default;
-                     box-shadow: 0 8px 40px rgba(0,0,0,.5); }
-    .lightbox .lbloading { color: #fff; font-size: 14px; }
-    .lightbox .lbclose { position: fixed; top: 16px; right: 20px; font-size: 28px; line-height: 1;
-                          background: none; border: 0; color: #fff; cursor: pointer; padding: 4px 10px; }
-    .box { width: 100%; box-sizing: border-box; border-radius: 10px; padding: 9px 11px;
-           background: var(--bg-2); border: 1px solid var(--border); font-family: inherit;
+    .box { width: 100%; box-sizing: border-box; border-radius: 14px; padding: 11px 13px;
+           background: linear-gradient(145deg, var(--surface), var(--bg-2)); border: 1px solid var(--border); font-family: inherit;
+           box-shadow: var(--shadow-control);
            transition: border-color .12s, box-shadow .12s; }
     .box:focus-within, textarea.box:hover { border-color: var(--accent); }
     .box:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
@@ -248,8 +238,9 @@ import { TagRow } from './api';
     @keyframes confirmPop { from { opacity: 0; transform: scale(.75); } to { opacity: 1; transform: scale(1); } }
     .learnmsg { margin-top: 10px; padding: 8px 10px; border-radius: 10px;
                 background: var(--tag-learned); font-size: 12px; }
-    .teach-panel { border: 1px solid var(--border); border-radius: 10px; padding: 10px;
-                   background: var(--bg-2); }
+    .teach-panel { border: 1px solid var(--border); border-radius: 16px; padding: 12px;
+                   background: linear-gradient(145deg, var(--surface), var(--bg-2));
+                   box-shadow: var(--shadow-control); }
     .teach-row { display: flex; gap: 6px; }
     .teach-row select, .teach-row .teach-name {
       border-radius: 7px; border: 1px solid var(--border); background: var(--bg);
@@ -369,11 +360,6 @@ export class PreviewComponent {
   closeLightbox() {
     this.lightboxOpen.set(false);
     this.lightboxSrc.set(null);
-  }
-
-  @HostListener('document:keydown.escape')
-  onEscape() {
-    if (this.lightboxOpen()) this.closeLightbox();
   }
 
   isEditing(t: TagRow) { return this.editing() === t.category + ' ' + t.name; }
