@@ -81,7 +81,9 @@ app.whenReady().then(async () => {
     "SELECT id FROM files WHERE filename LIKE 'hatsune_miku%' ORDER BY id LIMIT 1"
   ).get().id;
   const sample = path.resolve(__dirname, "../../samples/anime-neon-city-heroine.webp");
-  const largeSample = path.join(HOME, "large-preview-over-30mb.bmp");
+  const largeSampleDir = path.join(HOME, "Large Preview Path ü");
+  fs.mkdirSync(largeSampleDir, { recursive: true });
+  const largeSample = path.join(largeSampleDir, "large preview over 30mb.bmp");
   const largeSampleSize = createLargeBmp(largeSample);
   const sampleSha = "sample-anime";
   const thumbDir = path.join(HOME, "thumbs", sampleSha.slice(0, 2));
@@ -155,6 +157,10 @@ app.whenReady().then(async () => {
       preload: path.join(__dirname, "src/preload/preload.js"),
       backgroundThrottling: false,
       offscreen: !showSmoke,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
   win.loadFile(path.join(__dirname, "renderer/dist/browser/index.html"));

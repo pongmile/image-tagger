@@ -123,7 +123,9 @@ app.whenReady().then(async () => {
   logPackageSmoke("database-ready");
   db = openLibrary();
   if (packageSmoke) {
-    const samplePath = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
+    const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
+    const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image ü.jpg");
+    fs.copyFileSync(packagedSample, samplePath);
     packageSmokeImageId = Number(db.prepare(
       "INSERT INTO files (path,filename,folder,sha256,mime,index_status) " +
       "VALUES (?,?,?,?,?,'done') ON CONFLICT(path) DO UPDATE SET mime=excluded.mime RETURNING id"
