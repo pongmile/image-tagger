@@ -136,7 +136,7 @@ app.whenReady().then(async () => {
   await registerFullImageProtocol(protocol, net, db, logPackageSmoke);
   if (packageSmoke) {
     const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
-    const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image ü.jpg");
+    const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image \u00fc.jpg");
     fs.copyFileSync(packagedSample, samplePath);
     packageSmokeImageId = Number(db.prepare(
       "INSERT INTO files (path,filename,folder,sha256,mime,index_status) " +

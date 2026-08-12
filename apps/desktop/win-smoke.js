@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
     "SELECT id FROM files WHERE filename LIKE 'hatsune_miku%' ORDER BY id LIMIT 1"
   ).get().id;
   const sample = path.resolve(__dirname, "../../samples/anime-neon-city-heroine.webp");
-  const largeSampleDir = path.join(HOME, "Large Preview Path ü");
+  const largeSampleDir = path.join(HOME, "Large Preview Path \u00fc");
   fs.mkdirSync(largeSampleDir, { recursive: true });
   const largeSample = path.join(largeSampleDir, "large preview over 30mb.bmp");
   const largeSampleSize = createLargeBmp(largeSample);

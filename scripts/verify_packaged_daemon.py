@@ -42,7 +42,7 @@ def require_release_files() -> None:
 
 def smoke_electron_app(executable: Path, cwd: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="image-tagger-app-release-") as temp_root:
-        app_home = Path(temp_root) / "User Data - portable path ü"
+        app_home = Path(temp_root) / "User Data - portable path \u00fc"
         app_home.mkdir()
         marker = Path(app_home) / "package-smoke-ok"
         app_env = os.environ.copy()
@@ -174,7 +174,7 @@ def main() -> int:
     print("packaged Electron executable: ok")
 
     with tempfile.TemporaryDirectory(prefix="image-tagger-portable-") as portable_root:
-        portable_dir = Path(portable_root) / "Portable App - path test ü"
+        portable_dir = Path(portable_root) / "Portable App - path test \u00fc"
         portable_dir.mkdir()
         with zipfile.ZipFile(PORTABLE) as archive:
             archive.extractall(portable_dir)
@@ -189,7 +189,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(
         prefix="image-tagger-installer-", ignore_cleanup_errors=True
     ) as install_root:
-        install_dir = Path(install_root) / "Image Tagger Installed ü"
+        install_dir = Path(install_root) / "Image Tagger Installed \u00fc"
         installed = subprocess.run(
             [str(INSTALLER), "/S", f"/D={install_dir}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -209,11 +209,11 @@ def main() -> int:
             )
             if removed.returncode:
                 raise RuntimeError(f"NSIS uninstaller exited with {removed.returncode}")
-            deadline = time.time() + 30
-            while installed_exe.exists() and time.time() < deadline:
+            deadline = time.time() + 60
+            while install_dir.exists() and time.time() < deadline:
                 time.sleep(0.1)
-            if installed_exe.exists():
-                raise TimeoutError("NSIS uninstaller did not remove the installed app")
+            if install_dir.exists():
+                raise TimeoutError("NSIS uninstaller did not fully remove the installed app")
     print("NSIS silent install, launch, and uninstall: ok")
 
     print("PASS: packaged app, runtime, daemon, samples, installer and portable ZIP")
