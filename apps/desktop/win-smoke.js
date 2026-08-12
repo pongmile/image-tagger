@@ -8,7 +8,13 @@ const fs = require("fs");
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "image-tagger",
-  privileges: { secure: true, standard: true, stream: true },
+  privileges: {
+    secure: true,
+    standard: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
 }]);
 
 // Electron can outlive the shell process that launched this smoke test on

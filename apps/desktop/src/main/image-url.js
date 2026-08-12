@@ -12,7 +12,7 @@ function fullImageUrl(db, fileId) {
 }
 
 async function registerFullImageProtocol(protocol, net, db, diagnostic = () => {}) {
-  await protocol.handle("image-tagger", (request) => {
+  await protocol.handle("image-tagger", async (request) => {
     try {
       const url = new URL(request.url);
       const id = url.hostname === "full" ? Number(url.pathname.slice(1)) : NaN;
@@ -26,7 +26,9 @@ async function registerFullImageProtocol(protocol, net, db, diagnostic = () => {
         return new Response(null, { status: 404 });
       }
       diagnostic(`image-request=${id}`);
-      return net.fetch(pathToFileURL(row.path).toString());
+      const response = await net.fetch(pathToFileURL(row.path).toString());
+      diagnostic(`image-response=${id}:${response.status}:${response.headers.get("content-type") || "none"}`);
+      return response;
     } catch (error) {
       diagnostic(`image-request-error=${String(error?.stack || error)}`);
       return new Response(null, { status: 500 });

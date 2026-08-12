@@ -12,7 +12,13 @@ const { fullImageUrl, registerFullImageProtocol } = require("./image-url");
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "image-tagger",
-  privileges: { secure: true, standard: true, stream: true },
+  privileges: {
+    secure: true,
+    standard: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
 }]);
 
 const packageSmoke = process.env.IMAGE_TAGGER_PACKAGE_SMOKE === "1";
@@ -263,9 +269,7 @@ app.whenReady().then(async () => {
     height: 800,
     minWidth: 720,
     minHeight: 560,
-    ...(packageSmoke
-      ? { show: true, x: -32000, y: -32000 }
-      : { show: false }),
+    show: false,
     backgroundColor: "#0b1220",
     ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
@@ -297,30 +301,21 @@ app.whenReady().then(async () => {
         }
         if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
         logPackageSmoke("renderer-ready");
-        const streamedImage = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
-          const deadline = Date.now() + 10000;
-          const attempt = () => {
-            const image = new Image();
-            image.hidden = true;
-            image.onload = () => {
-              const result = { width: image.naturalWidth, height: image.naturalHeight };
-              image.remove();
-              resolve(result);
-            };
-            image.onerror = () => {
-              image.remove();
-              if (Date.now() < deadline) setTimeout(attempt, 200);
-              else resolve({ width: 0, height: 0 });
-            };
-            image.src = ${JSON.stringify(fullImageUrl(db, packageSmokeImageId))};
-            document.body.appendChild(image);
+        const streamedImage = await mainWindow.webContents.executeJavaScript(`(async () => {
+          const response = await fetch(${JSON.stringify(fullImageUrl(db, packageSmokeImageId))});
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          return {
+            ok: response.ok,
+            contentType: response.headers.get("content-type"),
+            byteLength: bytes.byteLength,
+            jpeg: bytes[0] === 0xff && bytes[1] === 0xd8 &&
+              bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9,
           };
-          attempt();
-        })`);
-        if (!streamedImage.width || !streamedImage.height) {
+        })()`);
+        if (!streamedImage.ok || !streamedImage.jpeg || streamedImage.byteLength < 1024) {
           throw new Error("packaged full-image streaming failed");
         }
-        logPackageSmoke(`image-stream=${streamedImage.width}x${streamedImage.height}`);
+        logPackageSmoke(`image-stream=${streamedImage.byteLength}:${streamedImage.contentType}`);
         const ping = await indexer.call("ping", {});
         if (ping !== "pong") throw new Error("packaged indexer ping failed");
         logPackageSmoke("indexer-pong");
