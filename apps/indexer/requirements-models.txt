@@ -18,7 +18,7 @@ insightface==0.7.3
 
 # M7 — few-shot learned tags (§5.3). Linear head over frozen CLIP/face embeddings;
 # trains in ms on CPU. Optional — without it, learned tags use a centroid prototype.
-scikit-learn==1.7.2
+scikit-learn==1.9.0
 
 # M8 — captioning (§11). BLIP via transformers; swappable per library.
 transformers==5.15.0       # (torch installed above for M5)
