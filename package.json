@@ -12,7 +12,7 @@
     "apps/desktop"
   ],
   "scripts": {
-    "setup": "npm install && npm run setup:renderer && npm run setup:py",
+    "setup": "node scripts/setup_node.js && npm run setup:py",
     "setup:renderer": "npm install --prefix apps/desktop/renderer",
     "setup:py": "python scripts/setup_dev.py",
     "bench": "python scripts/bench_search.py",
