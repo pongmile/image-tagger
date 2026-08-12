@@ -124,7 +124,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("tag:bulkRemove", (_e, ids, c, n) => writes.bulkRemoveTag(db, ids, c, n));
   ipcMain.handle("category:create", (_e, name, color) => writes.createCategory(db, name, color));
   ipcMain.handle("category:list", () => writes.listCategories(db));
-  await registerFullImageProtocol(protocol, db);
+  registerFullImageProtocol(protocol, db);
   ipcMain.handle("file:full", (_e, id) => fullImageUrl(db, id));
   ipcMain.handle("ocr:set", (_e, id, text) => writes.setOcrText(db, id, text));
   ipcMain.handle("file:open", () => "");

@@ -127,7 +127,7 @@ app.whenReady().then(async () => {
   await startIndexerAndWaitForDatabase(indexer);
   logPackageSmoke("database-ready");
   db = openLibrary();
-  await registerFullImageProtocol(protocol, db);
+  registerFullImageProtocol(protocol, db);
   if (packageSmoke) {
     const packagedSample = path.join(process.resourcesPath, "samples", "beach-sunset-kayak.jpg");
     const samplePath = path.join(process.env.IMAGE_TAGGER_HOME, "Package Smoke Image ü.jpg");
@@ -295,10 +295,16 @@ app.whenReady().then(async () => {
         if (!rendererReady) throw new Error("packaged Angular renderer did not become ready");
         logPackageSmoke("renderer-ready");
         const streamedImage = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
-          const image = new Image();
-          image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-          image.onerror = () => resolve({ width: 0, height: 0 });
-          image.src = ${JSON.stringify(fullImageUrl(db, packageSmokeImageId))};
+          const deadline = Date.now() + 10000;
+          const attempt = () => {
+            const image = new Image();
+            image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+            image.onerror = () => Date.now() < deadline
+              ? setTimeout(attempt, 200)
+              : resolve({ width: 0, height: 0 });
+            image.src = ${JSON.stringify(fullImageUrl(db, packageSmokeImageId))};
+          };
+          attempt();
         })`);
         if (!streamedImage.width || !streamedImage.height) {
           throw new Error("packaged full-image streaming failed");

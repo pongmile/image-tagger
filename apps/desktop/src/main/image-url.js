@@ -11,20 +11,19 @@ function fullImageUrl(db, fileId) {
 }
 
 function registerFullImageProtocol(protocol, db) {
-  return new Promise((resolve, reject) => {
-    protocol.registerFileProtocol("image-tagger", (request, callback) => {
-      try {
-        const url = new URL(request.url);
-        const id = url.hostname === "full" ? Number(url.pathname.slice(1)) : NaN;
-        if (!Number.isSafeInteger(id) || id <= 0) return callback({ error: -6 });
-        const row = db.prepare("SELECT path FROM files WHERE id=?").get(id);
-        if (!row?.path || !fs.existsSync(row.path)) return callback({ error: -6 });
-        callback({ path: row.path });
-      } catch {
-        callback({ error: -2 });
-      }
-    }, (error) => error ? reject(error) : resolve());
+  const registered = protocol.registerFileProtocol("image-tagger", (request, callback) => {
+    try {
+      const url = new URL(request.url);
+      const id = url.hostname === "full" ? Number(url.pathname.slice(1)) : NaN;
+      if (!Number.isSafeInteger(id) || id <= 0) return callback({ error: -6 });
+      const row = db.prepare("SELECT path FROM files WHERE id=?").get(id);
+      if (!row?.path || !fs.existsSync(row.path)) return callback({ error: -6 });
+      callback({ path: row.path });
+    } catch {
+      callback({ error: -2 });
+    }
   });
+  if (!registered) throw new Error("Unable to register full-image protocol");
 }
 
 module.exports = { fullImageUrl, registerFullImageProtocol };

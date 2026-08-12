@@ -1,4 +1,4 @@
-import { Component, EventEmitter, HostListener, Input, Output } from '@angular/core';
+import { Component, EventEmitter, HostListener, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 
 @Component({
   selector: 'app-zoomable-lightbox',
@@ -19,8 +19,9 @@ import { Component, EventEmitter, HostListener, Input, Output } from '@angular/c
            (wheel)="onWheel($event, viewport)" (dblclick)="toggleZoom($event)"
            (pointerdown)="startPan($event)" (pointermove)="movePan($event)"
            (pointerup)="endPan($event)" (pointercancel)="endPan($event)">
-        @if (src) {
-          <img [src]="src" [alt]="alt" draggable="false" decoding="async"
+        @if (displaySrc) {
+          <img [src]="displaySrc" [alt]="alt" draggable="false" decoding="async"
+               (error)="retryImage()"
                [style.transform]="imageTransform" (click)="$event.stopPropagation()" />
         } @else {
           <div class="loading">Loading full image…</div>
@@ -61,10 +62,11 @@ import { Component, EventEmitter, HostListener, Input, Output } from '@angular/c
     }
   `],
 })
-export class ZoomableLightboxComponent {
+export class ZoomableLightboxComponent implements OnChanges {
   @Input() src: string | null = null;
   @Input() alt = '';
   @Output() readonly closed = new EventEmitter<void>();
+  displaySrc: string | null = null;
 
   readonly maxZoom = 8;
   zoom = 1;
@@ -74,6 +76,23 @@ export class ZoomableLightboxComponent {
   private pointerId: number | null = null;
   private dragX = 0;
   private dragY = 0;
+  private imageRetries = 0;
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (!changes['src']) return;
+    this.displaySrc = this.src;
+    this.imageRetries = 0;
+  }
+
+  retryImage() {
+    if (!this.src || this.imageRetries >= 10) return;
+    const retry = ++this.imageRetries;
+    setTimeout(() => {
+      if (!this.src || retry !== this.imageRetries) return;
+      const separator = this.src.includes('?') ? '&' : '?';
+      this.displaySrc = `${this.src}${separator}retry=${retry}`;
+    }, 200);
+  }
 
   get zoomPercent(): number { return Math.round(this.zoom * 100); }
   get imageTransform(): string {
