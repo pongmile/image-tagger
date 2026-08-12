@@ -68,7 +68,7 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
 def main() -> int:
     require_release_files()
     subprocess.run(
-        [str(PYTHON), "-c", "import PIL, watchdog, piexif, onnxruntime, rapidocr_onnxruntime; print('packaged Python dependencies: ok')"],
+        [str(PYTHON), "-c", "import PIL, watchdog, piexif, onnxruntime, rapidocr_onnxruntime, sqlite_vec; print('packaged Python dependencies: ok')"],
         check=True,
         cwd=INDEXER,
     )
