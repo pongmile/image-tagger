@@ -27,7 +27,8 @@
     "test:python": "python scripts/run_python_tests.py",
     "test:electron": "npm run test:smoke --workspace @image-tagger/desktop",
     "test:ui": "npm run test:ui --workspace @image-tagger/desktop",
-    "test": "npm run build:renderer && npm run test:python && npm run test:electron",
+    "test:updater": "npm run test:updater --workspace @image-tagger/desktop",
+    "test": "npm run build:renderer && npm run test:python && npm run test:updater && npm run test:electron",
     "dev:indexer": "python scripts/run_indexer.py"
   },
   "license": "MIT",

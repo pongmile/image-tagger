@@ -530,4 +530,15 @@ export class LibraryService {
     return this.api.getSetting(key, fallback);
   }
   setSetting(key: string, value: string) { return this.api.setSetting(key, value); }
+
+  // Update check (§ new, see api.ts's UpdateCheckResult / updater.js): not an
+  // auto-updater — just tells the Settings page whether a newer GitHub
+  // Release exists, and opens the official release page for the user to
+  // download/run themselves through the same, already-tested install flow.
+  getAppVersion() { return this.api.getAppVersion?.() ?? Promise.resolve('0.0.0'); }
+  checkForUpdates(force = false) {
+    return this.api.checkForUpdates?.(force) ??
+      Promise.resolve({ ok: false, error: 'update check is not available' });
+  }
+  openReleasePage(url: string) { return this.api.openReleasePage?.(url) ?? Promise.resolve(false); }
 }

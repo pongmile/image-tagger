@@ -9,6 +9,7 @@ const { openLibrary, search, countMatches } = require("./search");
 const writes = require("./writes");
 const { IndexerBridge } = require("./indexer");
 const { fullImageUrl, registerFullImageProtocol } = require("./image-url");
+const updater = require("./updater");
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "image-tagger",
@@ -215,6 +216,33 @@ app.whenReady().then(async () => {
     withSqliteRetry(() => writes.bulkRemoveTag(db, fileIds, category, name))
   );
 
+  // Update check (convenience + install/update-bug avoidance): looks at this
+  // repo's latest GitHub Release and reports whether it's newer than the
+  // running build. Never auto-downloads/installs anything — it only hands
+  // the renderer a URL to the official release page, so the user still goes
+  // through the same, already-tested NSIS installer/portable-zip flow.
+  // Disabled (no real network call) under an isolated dev/test profile
+  // (IMAGE_TAGGER_HOME, per docs/DEVELOPMENT.md) so dev runs and smoke tests
+  // never depend on/perform a live request to GitHub.
+  const updateChecksDisabled = Boolean(process.env.IMAGE_TAGGER_HOME);
+  ipcMain.handle("app:getVersion", () => app.getVersion());
+  ipcMain.handle("app:checkForUpdates", (_e, opts) => {
+    if (updateChecksDisabled) {
+      return { ok: false, error: "update checks are disabled in a dev/test profile" };
+    }
+    return updater.checkForUpdates({
+      currentVersion: app.getVersion(),
+      fetchImpl: net.fetch.bind(net),
+      force: Boolean(opts?.force),
+    });
+  });
+  // Only ever opens the URL our own checkForUpdates() already validated as a
+  // github.com link (see updater.js) — never an arbitrary renderer-supplied one.
+  ipcMain.handle("app:openReleasePage", (_e, url) => {
+    const target = updater.isTrustedGithubUrl(url) ? url : updater.FALLBACK_RELEASE_URL;
+    return shell.openExternal(target);
+  });
+
   // Python indexer bridge (spec §4): spawn the daemon, forward its progress
   // events to the renderer, and expose a generic control call + semantic search.
   const forward = (channel) => (payload) => {
@@ -283,8 +311,24 @@ app.whenReady().then(async () => {
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-  mainWindow.once("ready-to-show", () => { if (!packageSmoke) mainWindow?.show(); });
+  mainWindow.once("ready-to-show", () => {
+    if (!packageSmoke) mainWindow?.show();
+  });
   mainWindow.loadFile(rendererIndex());
+
+  // Warm the update-check cache shortly after launch so opening Settings
+  // shows a result instantly instead of a spinner — best-effort only: a
+  // failure here (offline, GitHub rate limit) is silently ignored, never
+  // surfaced as an error, and never blocks/delays the window showing.
+  // Skipped for dev/test runs (isolated IMAGE_TAGGER_HOME profile, per
+  // docs/DEVELOPMENT.md) so smoke tests never depend on a real network call.
+  if (!packageSmoke && !process.env.IMAGE_TAGGER_HOME) {
+    setTimeout(() => {
+      updater.checkForUpdates({ currentVersion: app.getVersion(), fetchImpl: net.fetch.bind(net) })
+        .catch(() => {});
+    }, 5000);
+  }
+
 
   if (packageSmoke) {
     mainWindow.webContents.once("did-finish-load", async () => {
