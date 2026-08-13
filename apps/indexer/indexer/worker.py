@@ -150,11 +150,17 @@ def _run_infer_locked(con, fid: int) -> None:
             heartbeat.beat()
             status.set(f"faces · {os.path.basename(path)}")
             from .models import faces
+            from . import learned
             fv = _engine.selected_variant(con, "insightface") or {}
             fe = faces.get_engine(str(_engine.active_model_dir(con, "insightface")),
                                   providers=providers, pack=fv.get("pack", "buffalo_l"))
             detected = fe.detect(path)
             db.write_faces(con, fid, detected, threshold=config.FACE_THRESHOLD)
+            # Score this file against 'face'-space learned tags immediately
+            # (§5.3), the same online-learning treatment CLIP gets above —
+            # otherwise a real-person learned tag would only catch up on the
+            # next manual "Refresh" instead of as the library indexes.
+            learned.apply_to_file(con, fid, "face")
 
     # OCR text-in-image (kind-agnostic — memes/screenshots aren't kind-specific).
     if config.facet_enabled(con, "ocr"):

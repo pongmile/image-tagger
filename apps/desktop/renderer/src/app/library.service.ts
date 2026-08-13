@@ -516,7 +516,9 @@ export class LibraryService {
 
   listTags() { return this.api.indexer.listTags(); }
   learnStatus(category: string, name: string) { return this.api.indexer.learnStatus(category, name); }
-  learn(category: string, name: string) { return this.api.indexer.learn(category, name); }
+  learn(category: string, name: string, space?: string) {
+    return this.api.indexer.learn(category, name, space);
+  }
   learnConfirm(category: string, name: string, fileId: number) {
     return this.api.indexer.learnConfirm(category, name, fileId);
   }

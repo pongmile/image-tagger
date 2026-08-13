@@ -149,6 +149,59 @@ def run() -> int:
     else:
         print("  -- scikit-learn absent; linear-head upgrade skipped --")
 
+    # --- Face-space learned tags (§5.3): the same few-shot mechanism, but on
+    # InsightFace embeddings instead of CLIP, so it keeps recognizing one real
+    # person across photos where CLIP similarity would drift. Also verifies the
+    # online-learning hook added to worker.py: a newly indexed file with a
+    # detected face is scored against 'face'-space learned tags immediately,
+    # not only when the user presses Train/Refresh again. --------------------
+    os.environ["IMAGE_TAGGER_FACES"] = "1"
+    from indexer.models import faces
+
+    face_pos = ["mira_1.png", "mira_2.png", "mira_3.png", "mira_4.png", "mira_5.png"]
+    face_heldout = "mira_new.png"
+    face_layout = {fn: [("mira", [10, 10, 40, 40])] for fn in face_pos}
+    faces.set_engine(faces.FakeFaceEngine(face_layout, dim=16))
+    for fn in face_pos:
+        Image.new("RGB", (64, 64), (150, 150, 150)).save(lib / fn)
+    rescan(con)
+    worker.drain(con)
+
+    fid.update({Path(r["path"]).name: r["id"] for r in
+                con.execute("SELECT id, path FROM files")})
+    check(all(con.execute("SELECT count(*) c FROM faces WHERE file_id=?",
+                          (fid[fn],)).fetchone()["c"] == 1 for fn in face_pos),
+          "FakeFaceEngine embeddings populated in faces table")
+
+    for fn in face_pos:
+        db.add_manual_tag(con, fid[fn], "mira", "person")
+
+    fs = learned.build(con, "person", "mira", space="face")
+    check(fs is not None and fs["method"] == "centroid",
+          f"face-space learned tag trains a centroid (got {fs})")
+
+    # A new photo of the SAME person, indexed AFTER training: worker.py's faces
+    # facet must score it against the 'face'-space learned tag as part of
+    # normal indexing, with no explicit learned.apply() call in this test.
+    faces.set_engine(faces.FakeFaceEngine(
+        {**face_layout, face_heldout: [("mira", [12, 12, 40, 40])]}, dim=16))
+    Image.new("RGB", (64, 64), (150, 150, 150)).save(lib / face_heldout)
+    rescan(con)
+    worker.drain(con)
+    fid[face_heldout] = con.execute(
+        "SELECT id FROM files WHERE filename=?", (face_heldout,)).fetchone()["id"]
+
+    def has_person_tag(file):
+        q = ("""SELECT source FROM file_tags ft JOIN tags t ON t.id=ft.tag_id
+                JOIN categories c ON c.id=t.category_id
+                WHERE ft.file_id=? AND t.name='mira' AND c.name='person'""")
+        row = con.execute(q, (file,)).fetchone()
+        return row["source"] if row else None
+
+    check(has_person_tag(fid[face_heldout]) == "learned",
+          "new face auto-scored against face-space learned tag during "
+          "indexing (worker.py online-apply hook), no manual Train/Refresh")
+
     print()
     if fails:
         print(f"RESULT: FAIL — {len(fails)} check(s)")

@@ -411,18 +411,23 @@ def _learn(con, category: str, name: str, space: str) -> dict:
                 "error": f"needs at least {learned.MIN_POSITIVES} manual examples",
                 "count": have, "usable": 0}
     prepared = 0
+    prep: dict = {}
     if space == "clip":
         prep = _prepare_clip_examples(con, category, name)
+        if not prep["ok"]:
+            return {"ok": False, "count": have, **prep}
+        prepared = prep["prepared"]
+    elif space == "face":
+        prep = _prepare_face_examples(con, category, name)
         if not prep["ok"]:
             return {"ok": False, "count": have, **prep}
         prepared = prep["prepared"]
     summary = learned.build(con, category, name, space=space)
     if summary is None:
         return {"ok": False, "error": "not enough usable embeddings yet",
-                "count": have, "usable": prep.get("usable", 0) if space == "clip" else 0,
-                "prepared": prepared}
+                "count": have, "usable": prep.get("usable", 0), "prepared": prepared}
     return {"ok": True, **summary, "count": have, "prepared": prepared,
-            "queued": prep.get("queued", 0) if space == "clip" else 0}
+            "queued": prep.get("queued", 0)}
 
 
 def _prepare_clip_examples(con, category: str, name: str) -> dict:
@@ -492,6 +497,73 @@ def _prepare_clip_examples(con, category: str, name: str) -> dict:
                 "prepared": prepared, "usable": usable}
     return {"ok": True, "prepared": prepared, "usable": usable,
             "queued": db.enqueue_missing_clip_embeddings(con)}
+
+
+def _prepare_face_examples(con, category: str, name: str) -> dict:
+    """Create missing face embeddings for the explicitly hand-tagged examples.
+
+    Mirrors _prepare_clip_examples for the 'face' embedding space (§5.3): a
+    deliberate Train click enables the Faces facet and detects only those
+    examples immediately, instead of requiring the whole library to already
+    have run through face detection first.
+    """
+    from . import engine
+    from .models import faces
+    from .worker import INFERENCE_LOCK
+
+    rows = con.execute(
+        """SELECT DISTINCT f.id, f.path FROM files f
+             JOIN file_tags ft ON ft.file_id=f.id
+             JOIN tags t ON t.id=ft.tag_id
+             JOIN categories c ON c.id=t.category_id
+            WHERE c.name=? AND t.name=? AND ft.source='manual'""",
+        (category, name),
+    ).fetchall()
+
+    def has_face(file_id: int) -> bool:
+        return con.execute(
+            "SELECT 1 FROM faces WHERE file_id=? LIMIT 1", (file_id,)
+        ).fetchone() is not None
+
+    missing = [r for r in rows if not has_face(r["id"])]
+    if not missing:
+        return {"ok": True, "prepared": 0, "usable": len(rows), "queued": 0}
+
+    enabled = _set_facet_enabled(con, "faces", True)
+    if not enabled.get("ok"):
+        return {"ok": False,
+                "error": f"Faces is not ready: {enabled.get('error', 'unknown error')}",
+                "prepared": 0, "usable": len(rows) - len(missing)}
+
+    cfg = engine.get_engine_config(con)
+    fv = engine.selected_variant(con, "insightface") or {}
+    face_engine = faces.get_engine(
+        str(engine.active_model_dir(con, "insightface")),
+        providers=cfg["onnx_providers"], pack=fv.get("pack", "buffalo_l"),
+    )
+    if isinstance(face_engine, faces.NullFaceEngine):
+        return {"ok": False,
+                "error": f"Faces could not start: {faces.last_error() or 'backend unavailable'}",
+                "prepared": 0, "usable": len(rows) - len(missing)}
+
+    prepared = 0
+    with INFERENCE_LOCK:
+        for row in missing:
+            try:
+                detected = face_engine.detect(row["path"])
+                db.write_faces(con, row["id"], detected, threshold=config.FACE_THRESHOLD)
+                if detected:
+                    prepared += 1
+            except Exception:
+                # Continue through the example set; the structured usable count
+                # below makes a partial/corrupt set visible to the UI.
+                continue
+    usable = sum(1 for row in rows if has_face(row["id"]))
+    if usable < 5:
+        return {"ok": False,
+                "error": f"only {usable} example(s) with a detectable face; 5 are required",
+                "prepared": prepared, "usable": usable}
+    return {"ok": True, "prepared": prepared, "usable": usable, "queued": 0}
 
 
 def _learn_feedback(con, msg: dict, label: int) -> dict:

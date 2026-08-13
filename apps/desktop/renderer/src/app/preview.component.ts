@@ -158,6 +158,13 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
             @for (n of teachNames(teachCat.value); track n) { <option [value]="n"></option> }
           </datalist>
         </div>
+        <label class="teach-space" data-testid="teach-space-face"
+               title="Uses facial features (InsightFace) instead of overall image similarity — keeps recognizing the same real person across different photos, angles, and outfits.">
+          <input type="checkbox" [checked]="teachSpace() === 'face'"
+                 (change)="teachSpace.set($any($event.target).checked ? 'face' : 'clip')"
+                 data-testid="teach-space-face-checkbox" />
+          recognize by face (real person)
+        </label>
         @if (teachStatus()) { <div class="teach-status">{{ teachStatus() }}</div> }
         <button class="teach-btn" (click)="tagAndTrain(teachCat.value, teachName.value)"
                 [disabled]="teaching()" data-testid="teach-submit">
@@ -249,6 +256,9 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
     .teach-row select:focus, .teach-row .teach-name:focus { outline: none; border-color: var(--accent); }
     .teach-row select { flex: 0 0 auto; font-size: 12px; }
     .teach-row .teach-name { flex: 1; min-width: 0; font-size: 12px; }
+    .teach-space { display: flex; align-items: center; gap: 6px; margin-top: 8px;
+                   font-size: 11px; color: var(--fg-dim); cursor: pointer; user-select: none; }
+    .teach-space input { cursor: pointer; }
     .teach-status { font-size: 11px; color: var(--fg-dim); margin-top: 6px; }
     .teach-btn { width: 100%; margin-top: 8px; font-size: 12px; padding: 7px; border-radius: 8px;
                 border: 1px solid var(--border); background: var(--accent); color: #fff; cursor: pointer;
@@ -292,6 +302,12 @@ export class PreviewComponent {
   private allTagNames = signal<{ name: string; category: string }[]>([]);
   readonly teaching = signal(false);
   readonly teachStatus = signal('');
+  // Which embedding space to train in (§5.3): 'clip' generalizes on overall
+  // image similarity (character/concept/outfit/pose/object/scene); 'face'
+  // generalizes on InsightFace embeddings instead, so it keeps recognizing the
+  // same real person across very different photos, angles, and outfits where
+  // CLIP similarity would drift. Defaults to 'clip' to preserve prior behavior.
+  readonly teachSpace = signal<'clip' | 'face'>('clip');
   private selectionContextId: number | null = null;
 
   constructor() {
@@ -331,11 +347,14 @@ export class PreviewComponent {
     const id = this.lib.selectedId();
     category = category.trim(); name = name.trim();
     if (id == null || !category || !name) return;
+    const space = this.teachSpace();
     this.teaching.set(true);
-    this.teachStatus.set(`Tagging ${category}:${name}, preparing CLIP examples, and training…`);
+    this.teachStatus.set(space === 'face'
+      ? `Tagging ${category}:${name}, preparing face examples, and training…`
+      : `Tagging ${category}:${name}, preparing CLIP examples, and training…`);
     try {
       await this.lib.addTag(category, name);
-      const r = await this.lib.learn(category, name);
+      const r = await this.lib.learn(category, name, space);
       this.teachStatus.set(r.ok
         ? `Trained “${name}” (${r.method}, ${r.n_pos} positive / ${r.n_neg ?? 0} negative example(s)) — applied to ${r.applied} image(s) now; ${r.queued ?? 0} remaining image(s) queued for matching.`
         : `Tagged, but training is not ready: ${r.error ?? 'unknown error'} (${r.usable ?? 0} usable embedding(s), ${r.count ?? 0} manual example(s)).`);
