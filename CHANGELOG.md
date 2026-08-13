@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Settings: added a "Check for updates" section that compares the running build against this repo's latest GitHub Release and links to it — not a silent auto-updater, so it can't introduce the install/update bugs that come with one
+- Learned tags: the "face" embedding space (for recognizing a specific real person across different photos) is now reachable from the "tag & teach" panel, and newly indexed faces are scored against face-space learned tags immediately instead of only on the next manual refresh
+- Fixed the thumbnail grid's selection highlight being misaligned with the thumbnail image
+
 ## 0.3.0
 
 - Execution providers: added OpenVINO support for Intel NPUs ("AI Boost") and DirectML auto-detection for other GPUs (AMD, Intel Arc/integrated, non-CUDA NVIDIA), broadening hardware acceleration beyond CUDA-only
