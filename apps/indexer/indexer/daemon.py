@@ -145,14 +145,19 @@ def handle(con, msg: dict) -> dict:
             # preview pane's "↻ re-Description" button. Narrower than
             # reindex_file: doesn't touch OCR/wd14/clip/faces.
             import os
+            from . import engine as engine_config
             row = con.execute("SELECT id FROM files WHERE path=?",
                               (msg["path"],)).fetchone()
+            ready, ready_reason = engine_config.facet_model_ready(con, "caption")
             if row is None:
                 result = {"ok": False, "error": "file not indexed"}
             elif not os.path.isfile(msg["path"]):
                 result = {"ok": False, "error": "file no longer exists"}
             elif not config.facet_enabled(con, "caption"):
                 result = {"ok": False, "error": "captioning is disabled — enable it on the Models tab"}
+            elif not ready:
+                result = {"ok": False,
+                          "error": f"{ready_reason} — install it on the Models tab"}
             else:
                 jid = db.enqueue_job(con, row["id"], "caption", priority=100)
                 result = {"ok": True, "queued": True, "job_id": jid}
@@ -202,8 +207,13 @@ def handle(con, msg: dict) -> dict:
                    "paused": _paused.is_set(),
                    "mode": db.get_setting(con, "index_mode", "auto")})
         elif cmd == "recaption_root":
+            from . import engine as engine_config
+            ready, ready_reason = engine_config.facet_model_ready(con, "caption")
             if not config.facet_enabled(con, "caption"):
                 result = {"ok": False, "error": "captioning is disabled — enable it on the Models tab"}
+            elif not ready:
+                result = {"ok": False,
+                          "error": f"{ready_reason} — install it on the Models tab"}
             else:
                 result = {"ok": True, "queued": db.recaption_root(con, int(msg["root_id"])),
                           "root_id": int(msg["root_id"])}

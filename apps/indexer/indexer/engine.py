@@ -346,27 +346,65 @@ def model_ready_marker(con, facet: str, variant: dict | None = None):
     return model_dir_for_variant(con, facet, variant) / ".ready"
 
 
+def _dep_importable(mod: str) -> bool:
+    """A namespace stub is not an installed dependency.
+
+    Interrupted ``pip --target`` runs (daemon._dependency_install_worker)
+    can leave an empty directory behind; a bare find_spec() still reports
+    that as a namespace package, which would make the Models screen show
+    "ready" for a dependency that never actually finished installing.
+    Mirrors daemon.py's own `installed()` guard for the same reason.
+    """
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.find_spec(mod)
+    return bool(spec and spec.origin and spec.origin != "namespace"
+                and Path(spec.origin).is_file())
+
+
+def facet_model_ready(con, facet: str) -> tuple[bool, str]:
+    """Cheap "is this facet's dependency + a previously-downloaded model
+    actually usable right now" check (§11/§5) — independent of the facet's
+    ``<facet>_enabled`` toggle (the Models screen already gates *that*
+    checkbox on readiness, but the two can still drift apart: the toggle
+    persists in settings even if the model directory/dependency is later
+    removed, corrupted, or the library is copied to a machine that never
+    installed it). Returns ``(ready, reason)``; `reason` is a short,
+    user-facing explanation when not ready.
+
+    Only "caption" and "faces" call this today — both are heavyweight,
+    opt-in facets (§11 captioning must never be *required* for the app to
+    work; §5 says the same for real-face recognition) where a missing model
+    is an expected, common state, not a bug to raise an error for.
+    """
+    import importlib
+    importlib.invalidate_caches()
+    if facet == "caption":
+        if not (_dep_importable("transformers") and _dep_importable("accelerate")):
+            return False, "captioning dependency (transformers + accelerate) is not installed"
+        if not model_ready_marker(con, "caption").exists():
+            return False, "no caption model has been downloaded yet"
+        return True, ""
+    if facet == "faces":
+        if not _dep_importable("insightface"):
+            return False, "InsightFace dependency is not installed"
+        if not model_ready_marker(con, "insightface").exists():
+            return False, "no face-recognition model has been downloaded yet"
+        return True, ""
+    raise ValueError(f"no readiness check for facet: {facet}")
+
+
 def facet_readiness(con=None) -> list[dict]:
     """Per-facet readiness + catalog info for the model-download manager (§12):
     dependency importable? model files present? enabled? which model, from where,
     how big, and where it lands on disk."""
-    import importlib.util
+    import importlib
     from pathlib import Path
     from . import config, db as _db
     importlib.invalidate_caches()
 
     def has(mod):
-        """A namespace stub is not an installed dependency.
-
-        Interrupted ``pip --target`` runs (daemon._dependency_install_worker)
-        can leave an empty directory behind; a bare find_spec() still reports
-        that as a namespace package, which would make the Models screen show
-        "ready" for a dependency that never actually finished installing.
-        Mirrors daemon.py's own `installed()` guard for the same reason.
-        """
-        spec = importlib.util.find_spec(mod)
-        return bool(spec and spec.origin and spec.origin != "namespace"
-                    and Path(spec.origin).is_file())
+        return _dep_importable(mod)
 
     wd14_model = None
     clip_present = faces_present = caption_present = False
