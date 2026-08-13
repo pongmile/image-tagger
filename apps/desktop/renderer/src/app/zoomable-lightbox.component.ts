@@ -15,6 +15,10 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
       </div>
       <button class="close" type="button" (click)="closed.emit()" title="Close (Esc)"
               aria-label="Close image preview">×</button>
+      <button class="navbtn navbtn-prev" type="button" (click)="prev.emit()" [disabled]="!canPrev"
+              title="Previous image (←)" aria-label="Previous image" data-testid="lightbox-prev">‹</button>
+      <button class="navbtn navbtn-next" type="button" (click)="next.emit()" [disabled]="!canNext"
+              title="Next image (→)" aria-label="Next image" data-testid="lightbox-next">›</button>
       <div #viewport class="viewport" [class.dragging]="dragging" [class.zoomed]="zoom > 1"
            (wheel)="onWheel($event, viewport)" (dblclick)="toggleZoom($event)"
            (pointerdown)="startPan($event)" (pointermove)="movePan($event)"
@@ -71,6 +75,13 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
     .toolbar .level { min-width: 76px; font-size: 12px; font-variant-numeric: tabular-nums; }
     .toolbar button:disabled { opacity: .35; }
     .close { position: fixed; z-index: 2; top: 16px; right: 20px; font-size: 26px; line-height: 1; }
+    .navbtn { position: fixed; z-index: 2; top: 50%; transform: translateY(-50%);
+              min-width: 44px; min-height: 56px; padding: 6px 10px; border: 0; border-radius: 12px;
+              background: #ffffff14; color: #f8fafc; font-size: 30px; line-height: 1; }
+    .navbtn:hover:not(:disabled) { background: #ffffff2b; }
+    .navbtn:disabled { opacity: .25; cursor: default; }
+    .navbtn-prev { left: 16px; }
+    .navbtn-next { right: 16px; }
     .loading { color: #f8fafc; font-size: 14px; }
     .hint { position: fixed; z-index: 2; bottom: 16px; left: 50%; transform: translateX(-50%);
             color: #cbd5e1; font-size: 11px; white-space: nowrap; pointer-events: none; }
@@ -78,13 +89,24 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
       .viewport { inset-inline: 8px; }
       .hint { display: none; }
       .close { right: 8px; }
+      .navbtn { min-width: 36px; min-height: 44px; font-size: 22px; }
+      .navbtn-prev { left: 6px; }
+      .navbtn-next { right: 6px; }
     }
   `],
 })
 export class ZoomableLightboxComponent implements OnChanges {
   @Input() src: string | null = null;
   @Input() alt = '';
+  // Optional prev/next navigation (§8.2 lightbox arrow-key browsing) — the
+  // caller (preview.component.ts) knows the current search-result list and
+  // owns swapping src to the adjacent file; this component only surfaces the
+  // affordance (buttons + arrow keys) and stays list-agnostic.
+  @Input() canPrev = false;
+  @Input() canNext = false;
   @Output() readonly closed = new EventEmitter<void>();
+  @Output() readonly prev = new EventEmitter<void>();
+  @Output() readonly next = new EventEmitter<void>();
   displaySrc: string | null = null;
 
   readonly maxZoom = 8;
@@ -207,4 +229,10 @@ export class ZoomableLightboxComponent implements OnChanges {
 
   @HostListener('document:keydown.escape')
   onEscape() { this.closed.emit(); }
+
+  @HostListener('document:keydown.arrowleft')
+  onArrowLeft() { if (this.canPrev) this.prev.emit(); }
+
+  @HostListener('document:keydown.arrowright')
+  onArrowRight() { if (this.canNext) this.next.emit(); }
 }

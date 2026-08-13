@@ -295,6 +295,11 @@ export class LibraryService {
   // only when the user clicks to enlarge, not part of selection/preview loading.
   fullImage(fileId: number) { return this.api.fullImage(fileId); }
 
+  // Thumbnail for an arbitrary file id, independent of the current selection
+  // (§8.2 multi-select grid preview) — unlike loadSelection()'s thumbUri,
+  // which only ever tracks the single focused row.
+  thumb(fileId: number) { return this.api.thumb(fileId); }
+
   async reindexSelected(): Promise<{
     ok: boolean; queued?: boolean; removed?: boolean; job_id?: number;
     error?: string; completed?: boolean;
