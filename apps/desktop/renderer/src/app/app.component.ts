@@ -116,53 +116,49 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
         <div class="qerr" data-testid="query-error">⚠ {{ lib.queryError() }}</div>
       }
 
-      <div class="status">
-        <span data-testid="count">{{ lib.total() | number }} results</span>
-        @if (lib.results().length < lib.total()) { <span class="dim">(showing {{ lib.results().length }})</span> }
-        @if (lib.queryMs() > 0) { <span class="dim">· {{ lib.queryMs() }} ms</span> }
-        @if (!lib.semantic()) {
-          <span class="grammar">bare=substring · a|b OR · !a NOT · &lt;a|b&gt; group · "phrase" · wild* c?rd · size:100mb · tag:partial · person:name · folder:path</span>
-        } @else {
-          <span class="grammar">semantic: ranked by meaning (CLIP embeddings)</span>
-        }
+      <div class="status-index-row">
+        <div class="status-info">
+          <span data-testid="count">{{ lib.total() | number }} results</span>
+          @if (lib.results().length < lib.total()) { <span class="dim">(showing {{ lib.results().length }})</span> }
+          @if (lib.queryMs() > 0) { <span class="dim">· {{ lib.queryMs() }} ms</span> }
+          <span class="workingnotice" data-testid="working-status">
+            @if (workingLabel()) { <span class="wl">· ⚙ {{ workingLabel() }}</span> }
+            @if (ramLabel()) { <span class="ram">· {{ ramLabel() }}</span> }
+          </span>
+        </div>
+
+        <div class="indexbar" data-testid="indexbar">
+          <span class="modeswitch">
+            <button [class.on]="mode() === 'auto'" (click)="setMode('auto')"
+                    title="watch folders and index changes automatically" data-testid="mode-auto">auto</button>
+            <button [class.on]="mode() === 'manual'" (click)="setMode('manual')"
+                    title="index only when you press Rescan" data-testid="mode-manual">manual</button>
+          </span>
+          @if (paused()) {
+            <button class="pauseresume paused" (click)="resume()" title="Indexing is paused — nothing is being processed right now" data-testid="resume">▶ Resume indexing</button>
+          } @else {
+            <button class="pauseresume running" (click)="pause()" title="Pause background indexing" data-testid="pause">⏸ Pause</button>
+          }
+          <button class="ctl" (click)="rescan()" [disabled]="rescanning()" data-testid="rescan-btn">
+            {{ rescanning() ? 'rescanning…' : '↻ Rescan' }}
+          </button>
+          @if (scanMessage()) {
+            <span class="scanmsg" data-testid="scan-message">{{ scanMessage() }}</span>
+          }
+          @if (errorCount() > 0) {
+            <button class="ctl err" (click)="retry()" data-testid="retry">↺ Retry {{ errorCount() }} error(s)</button>
+          }
+          @if (indexing()) {
+            <div class="progress" [class.paused]="paused()" data-testid="progress" [title]="jobsLabel()">
+              <div class="fill" [style.width.%]="pct()"></div>
+              <span class="pl">{{ paused() ? 'paused' : 'indexing' }} {{ prog()!.files_done }}/{{ prog()!.files_total }}</span>
+            </div>
+          } @else {
+            <span class="idle" data-testid="idle">idle · {{ prog()?.files_total || 0 }} files indexed</span>
+          }
+        </div>
       </div>
 
-      <div class="indexbar" data-testid="indexbar">
-        <span class="modeswitch">
-          <button [class.on]="mode() === 'auto'" (click)="setMode('auto')"
-                  title="watch folders and index changes automatically" data-testid="mode-auto">auto</button>
-          <button [class.on]="mode() === 'manual'" (click)="setMode('manual')"
-                  title="index only when you press Rescan" data-testid="mode-manual">manual</button>
-        </span>
-        @if (paused()) {
-          <button class="pauseresume paused" (click)="resume()" title="Indexing is paused — nothing is being processed right now" data-testid="resume">▶ Resume indexing</button>
-        } @else {
-          <button class="pauseresume running" (click)="pause()" title="Pause background indexing" data-testid="pause">⏸ Pause</button>
-        }
-        <button class="ctl" (click)="rescan()" [disabled]="rescanning()" data-testid="rescan-btn">
-          {{ rescanning() ? 'rescanning…' : '↻ Rescan' }}
-        </button>
-        @if (scanMessage()) {
-          <span class="scanmsg" data-testid="scan-message">{{ scanMessage() }}</span>
-        }
-        @if (errorCount() > 0) {
-          <button class="ctl err" (click)="retry()" data-testid="retry">↺ Retry {{ errorCount() }} error(s)</button>
-        }
-        @if (indexing()) {
-          <div class="progress" [class.paused]="paused()" data-testid="progress" [title]="jobsLabel()">
-            <div class="fill" [style.width.%]="pct()"></div>
-            <span class="pl">{{ paused() ? 'paused' : 'indexing' }} {{ prog()!.files_done }}/{{ prog()!.files_total }}</span>
-          </div>
-        } @else {
-          <span class="idle" data-testid="idle">idle · {{ prog()?.files_total || 0 }} files indexed</span>
-        }
-      </div>
-      @if (workingLabel() || ramLabel()) {
-        <div class="workingnotice" data-testid="working-status">
-          @if (workingLabel()) { <span class="wl">⚙ {{ workingLabel() }}</span> }
-          @if (ramLabel()) { <span class="ram">{{ workingLabel() ? ' · ' : '' }}indexer using {{ ramLabel() }}</span> }
-        </div>
-      }
       @if (lib.restartNotice()) {
         <div class="restartnotice" data-testid="restart-notice">⚠ {{ lib.restartNotice() }}</div>
       }
@@ -192,122 +188,98 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
     app-model-manager, app-faces, app-learned, app-settings { flex: 1; min-height: 0; }
     .searchview { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .searchview header, .searchview .bulk { flex: 0 0 auto; }
-    .tabs { display: flex; align-items: center; gap: 5px; padding: 8px 14px; flex: 0 0 auto;
+    .tabs { display: flex; align-items: center; gap: 4px; padding: 6px 12px; flex: 0 0 auto;
             border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg-2) 92%, transparent);
             box-shadow: 0 1px 0 #00000008; }
-    .tabs button { background: none; border: 0; padding: 7px 12px; border-radius: 8px;
-                   color: var(--fg-dim); }
-    .tabs button.on { background: var(--surface); color: var(--fg); box-shadow: var(--shadow); }
-    .brand { display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; font-weight: 750;
-             letter-spacing: -.02em; white-space: nowrap; }
-    .mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px;
-            color: #fff; font-size: 11px; letter-spacing: -.04em;
+    .tabs button { background: none; border: 0; padding: 5px 10px; border-radius: 6px;
+                   color: var(--fg-dim); font-size: 12px; font-weight: 500; }
+    .tabs button.on { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: var(--shadow); }
+    .brand { display: inline-flex; align-items: center; gap: 6px; margin-right: 8px; font-weight: 750;
+             letter-spacing: -.02em; white-space: nowrap; font-size: 13px; }
+    .mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px;
+            color: #fff; font-size: 10px; letter-spacing: -.04em;
             background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            box-shadow: 0 7px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+            box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent); }
     .tabs .env { margin-left: auto; padding: 1px 8px; border-radius: 999px;
                  background: var(--tag-manual); font-size: 11px; }
     .tabs .env.mock { background: var(--tag-path); }
-    header { border-bottom: 1px solid var(--border); padding: 12px 14px 10px;
-             background: color-mix(in srgb, var(--bg) 94%, var(--accent) 6%); }
-    .bar { display: flex; gap: 8px; }
-    .search { flex: 1; min-height: 42px; font-size: 15px; padding: 9px 13px;
-              border-radius: 10px; box-shadow: inset 0 1px 2px #00000008; }
-    .gear { flex: 0 0 auto; }
-    .status { display: flex; gap: 10px; align-items: center; margin-top: 6px;
-              font-size: 12px; color: var(--fg); }
-    .status .dim, .grammar { color: var(--fg-dim); }
-    .grammar { margin-left: auto; }
-    .env { padding: 1px 7px; border-radius: 999px; background: var(--tag-manual); font-size: 11px; }
-    .env.mock { background: var(--tag-path); }
-    .sem { flex: 0 0 auto; }
+
+    header { border-bottom: 1px solid var(--border); padding: 8px 12px 6px;
+             background: color-mix(in srgb, var(--bg) 95%, var(--accent) 5%);
+             display: flex; flex-direction: column; gap: 6px; }
+    .bar { display: flex; gap: 6px; align-items: center; }
+    .search { flex: 1; min-height: 34px; font-size: 13px; padding: 6px 12px;
+              border-radius: 8px; box-shadow: inset 0 1px 2px #00000008; }
+    .synhelp, .sem, .gear { height: 34px; padding: 4px 10px; font-size: 12px; border-radius: 8px; }
     .sem.on { background: var(--tag-clip); border-color: var(--accent); }
-    .filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 9px; }
-    .matchopts { display: flex; gap: 6px; flex-wrap: wrap; }
-    .matchopts button { font-size: 12px; padding: 5px 11px; border-radius: 7px; font-weight: 500;
+    .synhelp.on { background: var(--tag-clip); border-color: var(--accent); }
+
+    .filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .matchopts { display: flex; gap: 4px; flex-wrap: wrap; }
+    .matchopts button { font-size: 11px; padding: 3px 8px; border-radius: 6px; font-weight: 500; height: 26px;
                         background: var(--bg-2); color: var(--fg-dim); border: 1px solid var(--border); }
     .matchopts button.on { background: var(--tag-clip); color: var(--fg); font-weight: 600;
                            border-color: var(--accent); }
-    .confopts { display: flex; align-items: center; gap: 6px; }
+    .confopts { display: flex; align-items: center; gap: 4px; }
     .confopts .conflabel { font-size: 11px; color: var(--fg-dim); margin-right: 2px; }
-    .confopts button { font-size: 12px; padding: 5px 11px; border-radius: 7px; font-weight: 500;
+    .confopts button { font-size: 11px; padding: 3px 8px; border-radius: 6px; font-weight: 500; height: 26px;
                        background: var(--bg-2); color: var(--fg-dim); border: 1px solid var(--border); }
     .confopts button.on { background: var(--tag-learned); color: var(--fg); font-weight: 600;
                           border-color: var(--accent); }
-    .mediaopt { display: flex; align-items: center; gap: 8px; }
-    .mediaopt .conflabel { font-size: 12px; color: var(--fg-dim); font-weight: 500; }
-    /* A native <select> here used to be tiny, low-contrast, and unclear at a
-       glance (just emoji). A segmented button group matches .modeswitch's
-       existing pattern -- bigger hit targets, the active choice is obvious,
-       and the wording is spelled out instead of relying on emoji alone. */
-    .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px;
-                 overflow: hidden; }
+    .mediaopt { display: flex; align-items: center; gap: 6px; }
+    .mediaopt .conflabel { font-size: 11px; color: var(--fg-dim); font-weight: 500; }
+    .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .segmented button { border: 0; border-radius: 0; background: var(--bg-2); color: var(--fg-dim);
-                        padding: 7px 14px; font-size: 13px; font-weight: 500;
+                        padding: 3px 10px; font-size: 11px; font-weight: 500; height: 26px;
                         border-right: 1px solid var(--border); }
     .segmented button:last-child { border-right: 0; }
     .segmented button.on { background: var(--accent); color: #fff; font-weight: 600; }
-    .synhelp { flex: 0 0 auto; font-size: 12px; padding: 7px 12px; }
-    .synhelp.on { background: var(--tag-clip); border-color: var(--accent); }
-    .synpanel { margin-top: 8px; padding: 10px 14px; border-radius: 10px; background: var(--bg-2);
-                border: 1px solid var(--border); font-size: 12px; }
-    .synpanel table { border-collapse: collapse; width: 100%; }
-    .synpanel td { padding: 3px 10px 3px 0; vertical-align: top; }
-    .synpanel td:first-child { white-space: nowrap; }
-    .synpanel code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-                      padding: 1px 5px; font-size: 11px; }
-    .synfoot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--fg-dim); }
-    .qerr { margin-top: 6px; padding: 7px 12px; border-radius: 8px; font-size: 12px;
-            background: color-mix(in srgb, #ef4444 15%, var(--bg-2));
-            border: 1px solid color-mix(in srgb, #ef4444 40%, var(--border)); color: var(--fg); }
-    .indexbar { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
-    .modeswitch { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+
+    .status-index-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 11px; }
+    .status-info { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+    .status-info [data-testid="count"] { color: var(--fg); font-weight: 600; font-size: 12px; }
+    .workingnotice { font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; display: inline-flex; gap: 4px; }
+    .workingnotice .wl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 32ch; }
+
+    .indexbar { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    .modeswitch { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .modeswitch button { border: 0; border-radius: 0; background: var(--bg-2); color: var(--fg-dim);
-                         padding: 7px 13px; font-size: 13px; font-weight: 500; }
+                         padding: 3px 8px; font-size: 11px; font-weight: 500; height: 26px; }
     .modeswitch button.on { background: var(--accent); color: #fff; font-weight: 600; }
-    .ctl { font-size: 13px; padding: 7px 14px; border-radius: 8px;
+    .ctl { font-size: 11px; padding: 3px 10px; border-radius: 6px; height: 26px;
            background: var(--bg-2); border: 1px solid var(--border); font-weight: 500; }
     .ctl.err { background: var(--tag-path); font-weight: 600; }
-    /* Pause/Resume drives whether indexing runs at all -- the single most
-       consequential control on this screen -- so it gets real visual weight
-       instead of blending into the row like a minor toggle. */
-    .pauseresume { font-size: 14px; font-weight: 700; padding: 7px 18px; border-radius: 999px;
-                   border: 1px solid transparent; cursor: pointer; letter-spacing: .01em;
-                   transition: filter .12s, transform .05s; }
-    .pauseresume:active { transform: scale(.97); }
+    .pauseresume { font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 999px; height: 26px;
+                   border: 1px solid transparent; cursor: pointer; letter-spacing: .01em; transition: filter .12s, transform .05s; }
     .pauseresume.running { background: var(--accent); color: #fff; }
-    .pauseresume.running:hover { filter: brightness(1.08); }
-    .pauseresume.paused { background: #d97706; color: #fff;
-                          box-shadow: 0 0 0 3px color-mix(in srgb, #d97706 25%, transparent);
-                          animation: pausepulse 2s ease-in-out infinite; }
-    .pauseresume.paused:hover { filter: brightness(1.08); }
-    @keyframes pausepulse {
-      0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, #d97706 25%, transparent); }
-      50% { box-shadow: 0 0 0 6px color-mix(in srgb, #d97706 12%, transparent); }
-    }
-    .idle { font-size: 12px; color: var(--fg-dim); margin-left: 4px; }
-    .progress { position: relative; flex: 1; height: 18px; border-radius: 4px;
-                background: var(--bg-2); overflow: hidden; }
+    .pauseresume.paused { background: #d97706; color: #fff; }
+    .scanmsg { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
+    .idle { font-size: 11px; color: var(--fg-dim); }
+    .progress { position: relative; width: 140px; height: 16px; border-radius: 4px;
+                background: var(--bg-2); overflow: hidden; display: inline-block; vertical-align: middle; }
     .progress.paused .fill { opacity: .2; }
-    .progress .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent);
-                      opacity: .35; transition: width .3s; }
-    .progress .pl { position: relative; font-size: 11px; padding: 0 6px; line-height: 16px;
-                    color: var(--fg-dim); }
-    .bulk { display: flex; gap: 8px; align-items: center; padding: 6px 12px;
-            background: var(--sel); border-bottom: 1px solid var(--border); font-size: 13px; }
-    .bulk input { flex: 0 0 240px; }
+    .progress .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .35; transition: width .3s; }
+    .progress .pl { position: relative; font-size: 10px; padding: 0 4px; line-height: 16px; color: var(--fg-dim); white-space: nowrap; }
+
+    .synpanel { padding: 8px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--border); font-size: 11px; }
+    .synpanel table { border-collapse: collapse; width: 100%; }
+    .synpanel td { padding: 2px 8px 2px 0; vertical-align: top; }
+    .synpanel td:first-child { white-space: nowrap; }
+    .synpanel code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; font-size: 11px; }
+    .synfoot { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--fg-dim); }
+    .qerr { padding: 4px 10px; border-radius: 6px; font-size: 11px; background: color-mix(in srgb, #ef4444 15%, var(--bg-2)); border: 1px solid color-mix(in srgb, #ef4444 40%, var(--border)); color: var(--fg); }
+
+    .bulk { display: flex; gap: 8px; align-items: center; padding: 4px 12px;
+            background: var(--sel); border-bottom: 1px solid var(--border); font-size: 12px; }
+    .bulk input { flex: 0 0 200px; min-height: 26px; padding: 2px 8px; font-size: 12px; border-radius: 6px; }
+    .bulk button { height: 26px; padding: 2px 10px; font-size: 11px; border-radius: 6px; }
+
     main { display: grid; grid-template-columns: minmax(0, 1fr) 6px var(--preview-w, 420px);
            overflow: hidden; flex: 1; min-height: 0; }
     aside { min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
     .resizer { cursor: col-resize; background: var(--border); }
     .resizer:hover { background: var(--accent); }
-    .scanmsg { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
-    .workingnotice { margin-top: 6px; font-size: 11px; color: var(--fg-dim);
-                     font-variant-numeric: tabular-nums; display: flex; gap: 6px; }
-    /* Fixed width (not max-width): the filename changes on every job, and a
-       shrink-to-fit box would let the RAM figure after it visibly slide left
-       and right as names of different lengths come and go. */
-    .workingnotice .wl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 46ch; }
-    .restartnotice { margin-top: 6px; padding: 6px 10px; border-radius: 8px; font-size: 12px;
+    .restartnotice { padding: 4px 10px; border-radius: 6px; font-size: 11px;
                      background: color-mix(in srgb, #d97706 18%, var(--bg-2));
                      border: 1px solid color-mix(in srgb, #d97706 40%, var(--border)); color: var(--fg); }
     @media (max-width: 820px) {
@@ -315,7 +287,7 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
       .brand span:last-child { display: none; }
       .bar { flex-wrap: wrap; }
       .search { flex-basis: calc(100% - 120px); }
-      .indexbar { flex-wrap: wrap; height: auto; min-height: 28px; }
+      .indexbar { flex-wrap: wrap; height: auto; min-height: 26px; }
       main { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 1fr) minmax(240px, 42%); }
       aside { border-top: 1px solid var(--border); }
       .resizer { display: none; }

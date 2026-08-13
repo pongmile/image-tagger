@@ -17,9 +17,9 @@
   --tag-wd14: #06b6d433;
   --tag-clip: #ec489933;
   --shadow: 0 1px 2px #0f172a12, 0 8px 24px #0f172a0d;
-  --shadow-control: 0 1px 2px #0f172a12, 0 5px 14px #0f172a0a;
-  --radius-control: 12px;
-  --radius-card: 18px;
+  --shadow-control: 0 1px 2px #0f172a12, 0 4px 10px #0f172a0a;
+  --radius-control: 8px;
+  --radius-card: 14px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -46,9 +46,9 @@ body {
   letter-spacing: -.005em;
 }
 button {
-  font: inherit; font-size: 13px; font-weight: 600; color: inherit;
+  font: inherit; font-size: 12px; font-weight: 600; color: inherit;
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 90%, white), var(--bg-2));
-  border: 1px solid var(--border); border-radius: var(--radius-control); padding: 8px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-control); padding: 5px 11px;
   box-shadow: var(--shadow-control); cursor: pointer;
   transition: background .15s, border-color .15s, opacity .15s, box-shadow .15s, transform .15s;
 }
@@ -60,11 +60,11 @@ button:disabled { opacity: .55; cursor: default; }
 input:not([type='checkbox']):not([type='radio']):not([type='color']), select, textarea {
   font: inherit; color: inherit;
   background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 88%, var(--bg-2)));
-  border: 1px solid var(--border); border-radius: var(--radius-control); padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-control); padding: 6px 10px;
   box-shadow: inset 0 1px 1px #ffffff0d, var(--shadow-control);
   transition: border-color .15s, box-shadow .15s, background .15s;
 }
-input:not([type='checkbox']):not([type='radio']):not([type='color']), select { min-height: 38px; }
+input:not([type='checkbox']):not([type='radio']):not([type='color']), select { min-height: 32px; }
 select { appearance: none; padding-right: 34px;
          background-image: linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
                            linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);

@@ -319,6 +319,26 @@ app.whenReady().then(async () => {
         return { hasButtons: !!prevBtn && !!nextBtn, prevDisabledAtStart, nextDisabledAtStart, startName, afterClickName,
           afterKeyName, afterBackName, closed: !document.querySelector('[data-testid=lightbox]') };
       })()`);
+      // Grid list ArrowLeft/ArrowRight key navigation: pressing ArrowRight/ArrowLeft
+      // when viewing search results in list mode moves selection between files.
+      const gridNav = await win.webContents.executeJavaScript(`(async () => {
+        const rs = [...document.querySelectorAll('[data-testid=row]')];
+        if (rs.length < 2) return { ok: false };
+        rs[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 50));
+        const firstSel = document.querySelector('[data-testid=row].sel')?.dataset['fileId'];
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }));
+        await new Promise(r => setTimeout(r, 50));
+        const secondSel = document.querySelector('[data-testid=row].sel')?.dataset['fileId'];
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowLeft' }));
+        await new Promise(r => setTimeout(r, 50));
+        const backSel = document.querySelector('[data-testid=row].sel')?.dataset['fileId'];
+        return {
+          ok: firstSel != null && secondSel != null && backSel != null
+            && firstSel !== secondSel && backSel === firstSel
+        };
+      })()`);
+      console.log(`  gridNav=${JSON.stringify(gridNav)}`);
       // Multi-select grid preview (§8.2): picking >1 row must swap the right
       // pane to a plain thumbnail grid + filenames — no tags/metadata clutter.
       const multiSelect = await win.webContents.executeJavaScript(`(async () => {
@@ -483,7 +503,7 @@ app.whenReady().then(async () => {
       const multiSelectOk = /3 images selected/.test(multiSelect.head) && multiSelect.cells === 3
         && multiSelect.names === 3 && multiSelect.tagsInGrid === 0;
       const ok = /results/.test(count) && rows > 0 && tags > 0 && scrollOk
-        && liveProgress
+        && liveProgress && gridNav.ok
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
         && feedbackScoped.controls && !feedbackScoped.stale
         && previewZoom.controls && previewZoom.streamed && previewZoom.naturalWidth === 4096

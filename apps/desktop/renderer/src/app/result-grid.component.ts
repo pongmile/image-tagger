@@ -50,7 +50,7 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
       <div class="gridbody" #bodyEl (pointerdown)="startMarquee($event)"
            (pointermove)="moveMarquee($event)" (pointerup)="endMarquee($event)"
            (pointercancel)="endMarquee($event)">
-        <cdk-virtual-scroll-viewport itemSize="26" class="viewport" data-testid="viewport">
+        <cdk-virtual-scroll-viewport itemSize="24" class="viewport" data-testid="viewport">
           <div *cdkVirtualFor="let f of lib.results(); trackBy: trackId"
                class="row" [class.sel]="selected(f.id)" [attr.data-file-id]="f.id"
                (click)="click(f, $event)" (dblclick)="open(f)"
@@ -145,12 +145,12 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
                  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); }
     .empty h2 { margin: 0 0 7px; color: var(--fg); font-size: 18px; }
     .empty p { margin: 0; max-width: 420px; }
-    .viewbar { display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border);
-               background: var(--bg-2); flex: 0 0 auto; }
-    .viewbar button { font-size: 12px; padding: 5px 11px; }
+    .viewbar { display: flex; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border);
+               background: var(--bg-2); flex: 0 0 auto; align-items: center; }
+    .viewbar button { font-size: 11px; padding: 2px 8px; height: 24px; border-radius: 6px; }
     .viewbar button.on { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
     .header { display: flex; border-bottom: 1px solid var(--border);
-              background: var(--bg-2); font-size: 12px; color: var(--fg-dim);
+              background: var(--bg-2); font-size: 11px; color: var(--fg-dim); height: 24px; align-items: center;
               position: sticky; top: 0; user-select: none; }
     .header .cell { cursor: pointer; position: relative; }
     .header .cell:hover { color: var(--fg); }
@@ -160,7 +160,7 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
     .resizer:hover, .resizer:active { background: var(--accent); opacity: .45; }
     .gridbody { position: relative; flex: 1; min-height: 0; overflow: hidden; }
     .viewport { height: 100%; user-select: none; }
-    .row { display: flex; align-items: center; height: 26px; cursor: pointer;
+    .row { display: flex; align-items: center; height: 24px; cursor: pointer; font-size: 12px;
            border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
     .row:hover { background: var(--bg-2); }
     .row.sel { background: var(--sel); }
@@ -554,6 +554,7 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
   onKey(e: KeyboardEvent) {
     const tag = (document.activeElement?.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (document.querySelector('app-zoomable-lightbox, .modalback')) return;
     if (e.key === 'Escape') {
       this.menu.set(null); this.propertiesFile.set(null); return;
     }
@@ -568,8 +569,7 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
     const cur = rows.findIndex((r) => r.id === this.lib.selectedId());
     // In the thumbnail grid modes, one virtual scroll "item" is a whole row
     // of N cells, not one file -- Down/Up step by a full row (N files) and
-    // Left/Right step by one file, instead of Up/Down stepping by one file
-    // as in the list.
+    // Left/Right step by one file.
     const step = this.viewMode() === 'list' ? 1 : this.itemsPerRow();
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -579,11 +579,11 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
       e.preventDefault();
       const idx = cur < 0 ? 0 : Math.max(0, cur - step);
       void this.lib.select(rows[idx].id); this.reveal(idx);
-    } else if (e.key === 'ArrowRight' && this.viewMode() !== 'list') {
+    } else if (e.key === 'ArrowRight') {
       e.preventDefault();
       const idx = cur < 0 ? 0 : Math.min(rows.length - 1, cur + 1);
       void this.lib.select(rows[idx].id); this.reveal(idx);
-    } else if (e.key === 'ArrowLeft' && this.viewMode() !== 'list') {
+    } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
       const idx = cur < 0 ? 0 : Math.max(0, cur - 1);
       void this.lib.select(rows[idx].id); this.reveal(idx);
