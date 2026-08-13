@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld("api", {
   setOcr: (fileId, text) => ipcRenderer.invoke("ocr:set", fileId, text),
   reindexFile: (filePath) => ipcRenderer.invoke("file:reindex", filePath),
   recaptionFile: (filePath) => ipcRenderer.invoke("file:recaption", filePath),
+  retagFile: (filePath) => ipcRenderer.invoke("file:retag", filePath),
+  onFileDone: (cb) => {
+    const h = (_e, p) => cb(p);
+    ipcRenderer.on("indexer:fileDone", h);
+    return () => ipcRenderer.removeListener("indexer:fileDone", h);
+  },
   openFile: (filePath) => ipcRenderer.invoke("file:open", filePath),
   revealFile: (filePath) => ipcRenderer.invoke("file:reveal", filePath),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
@@ -53,6 +59,7 @@ contextBridge.exposeInMainWorld("api", {
       ipcRenderer.invoke("indexer:call", "reindex_root", { root_id: rootId }),
     recaptionRoot: (rootId) =>
       ipcRenderer.invoke("indexer:call", "recaption_root", { root_id: rootId }),
+    recaptionAll: () => ipcRenderer.invoke("indexer:call", "recaption_all", {}),
     listErrors: (rootId, limit) =>
       ipcRenderer.invoke("indexer:call", "list_errors", { root_id: rootId, limit }),
     // Scan scope: include/exclude roots + exclude patterns (§7.0)
@@ -81,6 +88,8 @@ contextBridge.exposeInMainWorld("api", {
       ipcRenderer.invoke("indexer:call", "learn_confirm", { category, name, file_id: fileId }),
     learnReject: (category, name, fileId) =>
       ipcRenderer.invoke("indexer:call", "learn_reject", { category, name, file_id: fileId }),
+    learnForget: (category, name) =>
+      ipcRenderer.invoke("indexer:call", "learn_forget", { category, name }),
     rejectAutoTag: (category, name, fileId, source) =>
       ipcRenderer.invoke("indexer:call", "reject_tag", { category, name, file_id: fileId, source }),
     confirmAutoTag: (category, name, fileId) =>

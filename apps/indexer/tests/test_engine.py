@@ -231,6 +231,21 @@ def run() -> int:
     check(db.next_job(con)["id"] == urgent_job,
           "interactive reindex jumps ahead of background queue")
 
+    # reindex_all() is the same kind of deliberate click as reindex_root() (a
+    # few lines above it in db.py, already priority=100 with this exact
+    # rationale) -- it must not silently join the tail of an older background
+    # sweep, or the button reads as broken for as long as that sweep takes.
+    con.execute("INSERT INTO files (path, sha256) VALUES ('older_sweep.png','older')")
+    older_id = con.execute(
+        "SELECT id FROM files WHERE path='older_sweep.png'").fetchone()["id"]
+    db.enqueue_job(con, older_id, "caption", priority=0)
+    queued = db.reindex_all(con)
+    check(queued >= 1, f"reindex_all queues every file (got {queued})")
+    picked = db.next_job(con)
+    check(picked is not None and picked["kind"] == "reindex",
+          f"reindex_all's jobs default to interactive priority and are picked "
+          f"before an older background job (got {picked and picked['kind']})")
+
     ids = []
     for i in range(3):
         con.execute("INSERT INTO files (path, sha256) VALUES (?, 'h')",

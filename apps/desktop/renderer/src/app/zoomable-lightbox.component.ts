@@ -24,7 +24,7 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
            (pointerdown)="startPan($event)" (pointermove)="movePan($event)"
            (pointerup)="endPan($event)" (pointercancel)="endPan($event)">
         @if (displaySrc) {
-          <img [src]="displaySrc" [alt]="alt" draggable="false" decoding="async"
+          <img [src]="displaySrc" [alt]="alt" draggable="false" decoding="async" fetchpriority="high"
                (error)="retryImage()" (load)="onImageLoad($event, viewport)"
                [style.transform]="imageTransform" (click)="$event.stopPropagation()" />
         } @else {
@@ -104,6 +104,12 @@ export class ZoomableLightboxComponent implements OnChanges {
   // affordance (buttons + arrow keys) and stays list-agnostic.
   @Input() canPrev = false;
   @Input() canNext = false;
+  // The *original's* pixel dimensions, when the caller knows them from the
+  // indexed row. Used to fit whatever is currently loaded into the box the
+  // full-resolution image will occupy, so the thumbnail shown while a very
+  // large original decodes fills the viewport as a blurry stand-in instead of
+  // sitting at its own 320px size in the middle and jumping on swap.
+  @Input() naturalSize: { width: number; height: number } | null = null;
   @Output() readonly closed = new EventEmitter<void>();
   @Output() readonly prev = new EventEmitter<void>();
   @Output() readonly next = new EventEmitter<void>();
@@ -133,9 +139,13 @@ export class ZoomableLightboxComponent implements OnChanges {
     if (!changes['src']) return;
     this.displaySrc = this.src;
     this.imageRetries = 0;
-    this.baseScale = 1;
-    this.naturalWidth = 0;
-    this.naturalHeight = 0;
+    // Deliberately *not* resetting baseScale/natural size here. Swapping src
+    // keeps the previously decoded frame on screen until the new one is ready
+    // -- which for a 100+ megapixel original is seconds -- and clearing the
+    // measurements mid-swap repainted that still-visible frame at scale 1,
+    // i.e. its raw pixel size. onImageLoad overwrites all three the moment the
+    // new image arrives, so the old values stay correct for exactly as long as
+    // the old image is the one being shown.
   }
 
   onImageLoad(event: Event, viewportEl: HTMLElement) {
@@ -152,7 +162,23 @@ export class ZoomableLightboxComponent implements OnChanges {
   private recomputeBaseScale() {
     if (!this.viewportEl || !this.naturalWidth || !this.naturalHeight) return;
     const { clientWidth, clientHeight } = this.viewportEl;
-    this.baseScale = Math.min(clientWidth / this.naturalWidth, clientHeight / this.naturalHeight, 1) || 1;
+    // Only a *stand-in* is fitted against the declared original: something at
+    // least as large as the original is the original (or better), and must be
+    // measured on its own decoded dimensions. The indexed width/height can
+    // disagree with what the decoder reports -- orientation handling, a stale
+    // row, a format whose header lies -- and trusting it for the real image
+    // would render it at the wrong size.
+    const declared = this.naturalSize;
+    const standIn = !!declared && declared.width > this.naturalWidth
+      && declared.height > this.naturalHeight;
+    const fitWidth = standIn ? declared!.width : this.naturalWidth;
+    const fitHeight = standIn ? declared!.height : this.naturalHeight;
+    // Fit is expressed against the original, so the "never upscale past 100%"
+    // clamp keeps meaning 100% *of the source*…
+    const fit = Math.min(clientWidth / fitWidth, clientHeight / fitHeight, 1) || 1;
+    // …then converted into a scale for the image actually on screen, so a
+    // thumbnail stand-in lands in exactly the box the original will fill.
+    this.baseScale = fit * (fitWidth / this.naturalWidth);
   }
 
   retryImage() {

@@ -1,5 +1,5 @@
 import { Injectable, NgZone, inject, signal } from '@angular/core';
-import { Api, FileDetail, FileRow, LearnSummary, Progress, SearchOpts, TagRow, getApi } from './api';
+import { Api, FileDetail, FileRow, LearnSummary, ModelState, Person, Progress, SearchOpts, TagRow, getApi } from './api';
 
 const folderOf = (p: string) => {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
@@ -55,6 +55,16 @@ export class LibraryService {
   // is visible instead of indexing/search just silently having gone stale
   // for a while with no explanation.
   readonly restartNotice = signal<string | null>(null);
+  // Stale-while-revalidate cache for the Models and People pages: both
+  // components get destroyed/recreated on every navigation (the app switches
+  // views via a signal, not a router), so their own local state always came
+  // back empty and showed a loading spinner on every visit even when nothing
+  // had changed. Caching here, on the singleton service that survives
+  // navigation, lets each page show its last-known data immediately and
+  // silently refetch in the background instead.
+  readonly modelStateCache = signal<ModelState | null>(null);
+  readonly personsCache = signal<Person[] | null>(null);
+  readonly personAvatarsCache = signal<Map<number, string>>(new Map());
   // Rolling buffer of daemon-side trouble (§7 resilience) — warnings, raw
   // stderr, and restarts — that used to have no visible surface at all, so a
   // real failure just looked like indexing silently doing nothing.
@@ -300,61 +310,76 @@ export class LibraryService {
   // which only ever tracks the single focused row.
   thumb(fileId: number) { return this.api.thumb(fileId); }
 
-  async reindexSelected(): Promise<{
-    ok: boolean; queued?: boolean; removed?: boolean; job_id?: number;
-    error?: string; completed?: boolean;
-  }> {
-    const f = this.results().find((x) => x.id === this.selectedId());
-    if (f) {
-      const id = f.id;
-      const result = await this.api.reindexFile(f.path);
-      await this.refreshProgress();
-      if (!result.ok || result.removed) {
-        await this.runSearch();
-        return result;
-      }
-
-      // Keep the button meaningful: wait for the queued pipeline to finish,
-      // then reload both the result list and this file's generated details.
-      const deadline = Date.now() + 180_000;
-      let completed = false;
-      while (Date.now() < deadline) {
-        const p = await this.api.indexer.progress();
-        this.acceptProgress(p);
-        if (this.activeJobs(p) === 0) { completed = true; break; }
-        if (p.paused) break;
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      }
-      await this.runSearch();
-      if (this.results().some((row) => row.id === id)) await this.select(id);
-      return { ...result, completed };
-    }
-    return { ok: false };
+  // reindexFile/recaptionFile/retagFile always bypass Pause Tagger (§12) and
+  // touch only the one file. The daemon runs them on its own thread (its RPC
+  // loop is single-threaded and must stay answerable — a blocked loop gets the
+  // whole daemon killed by the heartbeat watchdog), so the call returns as
+  // soon as the work has *started* and the outcome arrives as a file_done
+  // event. Same shape as rescan()/waitForScanDone() above.
+  private waitForFileDone(path: string, timeoutMs = 10 * 60_000) {
+    return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      const timer = setTimeout(() => {
+        off();
+        resolve({ ok: false, error: 'timed out waiting for the file to finish' });
+      }, timeoutMs);
+      const off = this.api.onFileDone((e) => {
+        if (e.path !== path) return;  // another file's action, keep waiting
+        clearTimeout(timer);
+        off();
+        resolve({ ok: e.ok, error: e.error });
+      });
+    });
   }
 
-  // Narrower sibling of reindexSelected() (§11): regenerates just the caption,
-  // so it doesn't need to re-run search or touch OCR/wd14/clip/faces.
-  async recaptionSelected(): Promise<{
-    ok: boolean; queued?: boolean; job_id?: number; error?: string; completed?: boolean;
+  async reindexSelected(): Promise<{
+    ok: boolean; removed?: boolean; error?: string;
   }> {
     const f = this.results().find((x) => x.id === this.selectedId());
     if (!f) return { ok: false };
     const id = f.id;
-    const result = await this.api.recaptionFile(f.path);
+    // Subscribe before starting so a fast action can't finish first.
+    const done = this.waitForFileDone(f.path);
+    const started = await this.api.reindexFile(f.path);
+    if (!started.ok) return started;
+    const result = await done;
     await this.refreshProgress();
-    if (!result.ok) return result;
+    await this.runSearch();
+    if (this.results().some((row) => row.id === id)) await this.select(id);
+    return result;
+  }
 
-    const deadline = Date.now() + 180_000;
-    let completed = false;
-    while (Date.now() < deadline) {
-      const p = await this.api.indexer.progress();
-      this.acceptProgress(p);
-      if (this.activeJobs(p) === 0) { completed = true; break; }
-      if (p.paused) break;
-      await new Promise((resolve) => setTimeout(resolve, 400));
+  // Narrower sibling of reindexSelected() (§11): regenerates just the caption,
+  // so it doesn't need to re-run search or touch OCR/wd14/clip/faces.
+  async recaptionSelected(): Promise<{ ok: boolean; error?: string }> {
+    const f = this.results().find((x) => x.id === this.selectedId());
+    if (!f) return { ok: false };
+    const id = f.id;
+    const done = this.waitForFileDone(f.path);
+    const started = await this.api.recaptionFile(f.path);
+    if (!started.ok) return started;
+    const result = await done;
+    await this.refreshProgress();
+    if (result.ok && this.selectedId() === id) this.detail.set(await this.api.fileDetail(id));
+    return result;
+  }
+
+  // Narrower sibling of reindexSelected() (per-model tag caching): regenerates
+  // just the WD14 tags for one file, bypassing the per-model cache -- the
+  // "I don't trust the cached result, redo this one now" override.
+  async retagSelected(): Promise<{ ok: boolean; error?: string }> {
+    const f = this.results().find((x) => x.id === this.selectedId());
+    if (!f) return { ok: false };
+    const id = f.id;
+    const done = this.waitForFileDone(f.path);
+    const started = await this.api.retagFile(f.path);
+    if (!started.ok) return started;
+    const result = await done;
+    await this.refreshProgress();
+    if (result.ok && this.selectedId() === id) {
+      this.detail.set(await this.api.fileDetail(id));
+      this.tags.set(await this.api.tags(id, this.minConfidence() ?? undefined));
     }
-    if (this.selectedId() === id) this.detail.set(await this.api.fileDetail(id));
-    return { ...result, completed };
+    return result;
   }
 
   openSelected() {
@@ -506,6 +531,15 @@ export class LibraryService {
   async recaptionRoot(rootId: number) {
     const r = await this.api.indexer.recaptionRoot(rootId);
     if (!r.ok) throw new Error(r.error || 'could not queue descriptions');
+    await this.refreshProgress();
+    return r;
+  }
+  // Explicit "↻ Regen all captions" (Sources page): force-redoes every
+  // file's caption with whichever model is active. Unlike reindexAll, a
+  // plain caption-model switch no longer does this automatically.
+  async recaptionAll() {
+    const r = await this.api.indexer.recaptionAll();
+    if (!r.ok) throw new Error(r.error || 'could not queue captions');
     await this.refreshProgress();
     return r;
   }

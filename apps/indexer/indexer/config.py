@@ -1,6 +1,7 @@
 """Central config. Values come from the settings table + env overrides."""
 from pathlib import Path
 import os
+import re
 import site
 import sys
 
@@ -13,11 +14,77 @@ RUNTIME_PACKAGES_DIR = APP_DIR / "runtime-packages"
 # Optional AI dependencies are installed into user data, not the packaged app.
 # This survives upgrades, works without administrator rights, and keeps model
 # setup from disappearing whenever a new desktop build replaces resources.
+_CPYTHON_TAG = re.compile(r"\.cp(\d{2,3})-")
+
+
+def foreign_abi_tag(directory: Path, budget: int = 500) -> str | None:
+    """Return the CPython tag *directory*'s compiled extensions were built for,
+    or None when they match this interpreter (or there are none to clash with).
+
+    ``pip --target`` bakes in whichever interpreter installed the packages —
+    normally the packaged 3.12 runtime. Running a dev checkout on a different
+    Python then puts those cp3XX ``.pyd``/``.so`` files *first* on ``sys.path``,
+    and the very first ``import numpy`` dies with an inscrutable "No module
+    named numpy._core._multiarray_umath" before the daemon can report anything
+    (the desktop app only sees "indexer daemon exited during startup"). Spotting
+    the clash here keeps the directory off ``sys.path`` entirely: optional facets
+    then read as not-installed, which the Models screen already handles, instead
+    of taking the whole daemon down with them.
+
+    Cheap by construction: the walk stops at the first extension built for *this*
+    interpreter and is bounded to `budget` directories, three levels deep — far
+    enough to reach ``numpy/_core/*.pyd`` in a tree that is otherwise gigabytes
+    of model weights.
+    """
+    ours = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    foreign: str | None = None
+    stack: list[tuple[Path, int]] = [(directory, 0)]
+    while stack and budget > 0:
+        current, depth = stack.pop()
+        budget -= 1
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                if depth < 2:
+                    stack.append((Path(entry.path), depth + 1))
+                continue
+            # abi3 wheels stay importable on every later 3.x, so their cp3XX tag
+            # is a floor rather than an exact-match requirement — never a clash.
+            if not entry.name.endswith((".pyd", ".so")) or "abi3" in entry.name:
+                continue
+            found = _CPYTHON_TAG.search(entry.name)
+            if not found:
+                continue
+            tag = f"cp{found.group(1)}"
+            if tag == ours:
+                return None
+            foreign = foreign or tag
+    return foreign
+
+
 runtime_packages = str(RUNTIME_PACKAGES_DIR)
-if runtime_packages not in sys.path:
-    sys.path.insert(0, runtime_packages)
-if RUNTIME_PACKAGES_DIR.exists():
-    site.addsitedir(runtime_packages)
+RUNTIME_PACKAGES_ABI_MISMATCH = (
+    foreign_abi_tag(RUNTIME_PACKAGES_DIR) if RUNTIME_PACKAGES_DIR.exists() else None
+)
+if RUNTIME_PACKAGES_ABI_MISMATCH:
+    # stdout is the daemon's JSON control channel; diagnostics go to stderr,
+    # which the desktop bridge already surfaces.
+    print(
+        f"warning: ignoring {runtime_packages} — built for "
+        f"{RUNTIME_PACKAGES_ABI_MISMATCH}, but this is "
+        f"cp{sys.version_info.major}{sys.version_info.minor}. Optional AI facets "
+        "will read as not installed; reinstall them from Settings > Models with "
+        "this interpreter, or point IMAGE_TAGGER_PYTHON at the matching one.",
+        file=sys.stderr,
+    )
+else:
+    if runtime_packages not in sys.path:
+        sys.path.insert(0, runtime_packages)
+    if RUNTIME_PACKAGES_DIR.exists():
+        site.addsitedir(runtime_packages)
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
 # Browse/search only (per §12 scope decision): a thumbnail frame + filename/

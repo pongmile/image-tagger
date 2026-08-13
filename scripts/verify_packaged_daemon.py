@@ -1,4 +1,13 @@
-"""Smoke-test the packaged Windows runtime without downloading optional models."""
+"""Smoke-test the packaged Windows runtime without downloading optional models.
+
+The NSIS stage installs and uninstalls the real downloadable artifact, which is
+destructive to any copy already installed on this machine (see
+`installed_locations`). It is therefore skipped automatically when one is
+detected. Flags:
+
+    --installer      run it anyway, uninstalling the existing copy
+    --no-installer   never run it
+"""
 from __future__ import annotations
 
 import json
@@ -19,9 +28,89 @@ UNPACKED = DIST / "win-unpacked"
 PYTHON = UNPACKED / "resources" / "python" / "python.exe"
 INDEXER = UNPACKED / "resources" / "indexer"
 with (ROOT / "apps" / "desktop" / "package.json").open(encoding="utf-8") as package_file:
-    VERSION = json.load(package_file)["version"]
+    _PACKAGE = json.load(package_file)
+VERSION = _PACKAGE["version"]
+PRODUCT_NAME = _PACKAGE.get("build", {}).get("productName", "Image Tagger")
 INSTALLER = DIST / f"Image-Tagger-{VERSION}-win-x64.exe"
 PORTABLE = DIST / f"Image-Tagger-{VERSION}-win-x64.zip"
+
+
+def _uninstaller_dir(uninstall_string: str) -> str:
+    """Directory holding the uninstaller named by an UninstallString.
+
+    The value is a command line, so the executable may be quoted and is
+    normally followed by switches ("...\\Uninstall Image Tagger.exe" /currentuser).
+    """
+    command = uninstall_string.strip()
+    if not command:
+        return ""
+    if command.startswith('"'):
+        executable = command[1:].split('"', 1)[0]
+    else:
+        executable = command.split(" ", 1)[0]
+    return str(Path(executable).parent) if executable else ""
+
+
+def installed_locations() -> list[str]:
+    """Where Windows currently has this app registered as installed.
+
+    electron-builder's NSIS target is per-user and keyed by appId, so running
+    the installer -- even silently, even with /D= pointing at a scratch
+    directory -- *first uninstalls whatever copy is already registered*. On a
+    developer machine that copy is their working install, so this verification
+    used to delete the app and its shortcuts as a side effect of `npm run dist`
+    (user data under IMAGE_TAGGER_HOME is separate and survives, but the
+    install itself does not). Detecting it lets the destructive stage be
+    skipped by default and stay opt-in.
+
+    CI runners have nothing installed, so the stage still runs there — which is
+    where verifying the downloadable artifact actually matters.
+    """
+    try:
+        import winreg
+    except ImportError:      # not Windows: nothing can be registered
+        return []
+    uninstall_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    views = [
+        (winreg.HKEY_CURRENT_USER, 0),
+        (winreg.HKEY_LOCAL_MACHINE, 0),
+        (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
+    ]
+    found: list[str] = []
+    for root, extra_flags in views:
+        try:
+            uninstall = winreg.OpenKey(
+                root, uninstall_path, 0, winreg.KEY_READ | extra_flags)
+        except OSError:
+            continue
+        with uninstall:
+            for index in range(winreg.QueryInfoKey(uninstall)[0]):
+                try:
+                    entry_name = winreg.EnumKey(uninstall, index)
+                    with winreg.OpenKey(uninstall, entry_name, 0,
+                                        winreg.KEY_READ | extra_flags) as entry:
+                        def value(name: str) -> str:
+                            try:
+                                return str(winreg.QueryValueEx(entry, name)[0] or "")
+                            except OSError:
+                                return ""
+                        # NSIS registers the DisplayName with the version
+                        # appended ("Image Tagger 0.7.0"), so match the prefix
+                        # rather than the bare product name.
+                        if not value("DisplayName").startswith(PRODUCT_NAME):
+                            continue
+                        # electron-builder's NSIS writes no InstallLocation, so
+                        # the uninstaller's own path is the only record of where
+                        # the installed copy actually lives.
+                        location = value("InstallLocation") or _uninstaller_dir(
+                            value("UninstallString"))
+                except OSError:
+                    continue        # entry vanished mid-enumeration
+                # A leftover registry entry pointing at a deleted directory is
+                # not an install worth protecting.
+                if location and Path(location).is_dir() and location not in found:
+                    found.append(location)
+    return found
 
 
 def require_release_files() -> None:
@@ -94,7 +183,7 @@ def smoke_electron_app(executable: Path, cwd: Path) -> None:
                 time.sleep(0.1)
 
 
-def main() -> int:
+def main(mode: str = "auto") -> int:
     require_release_files()
     subprocess.run(
         [str(PYTHON), "-c", "import PIL, watchdog, piexif, onnxruntime, rapidocr_onnxruntime, sqlite_vec; print('packaged Python dependencies: ok')"],
@@ -184,8 +273,39 @@ def main() -> int:
         smoke_electron_app(portable_exe, portable_dir)
     print("portable ZIP extraction and launch: ok")
 
-    # Exercise the downloadable NSIS artifact itself, including silent install,
-    # first launch, and uninstall in an isolated temporary destination.
+    installer_verified = verify_installer(mode)
+
+    # Name only what actually ran: a summary claiming the installer was checked
+    # when the stage was skipped is exactly the kind of thing a release is
+    # signed off on.
+    print("PASS: packaged app, runtime, daemon, samples"
+          + (", installer and portable ZIP" if installer_verified
+             else " and portable ZIP (installer stage skipped)"))
+    return 0
+
+
+def verify_installer(mode: str) -> bool:
+    """Exercise the downloadable NSIS artifact: silent install, launch, uninstall.
+
+    Destructive to an existing installation (see `installed_locations`), so by
+    default it yields to one rather than removing it silently. Returns whether
+    the stage actually ran.
+    """
+    if mode == "skip":
+        print("NSIS silent install, launch, and uninstall: skipped (--no-installer)")
+        return False
+    existing = installed_locations() if mode == "auto" else []
+    if existing:
+        print("NSIS silent install, launch, and uninstall: SKIPPED — "
+              f"{PRODUCT_NAME} is already installed at " + ", ".join(existing))
+        print("  The NSIS artifact uninstalls the registered copy before "
+              "installing, so verifying it here would remove that install and "
+              "its shortcuts. Your library, thumbnails and models are stored "
+              "separately and are not affected either way.")
+        print("  Re-run with `npm run verify:package -- --installer` to verify "
+              "it anyway (you will need to reinstall afterwards).")
+        return False
+
     with tempfile.TemporaryDirectory(
         prefix="image-tagger-installer-", ignore_cleanup_errors=True
     ) as install_root:
@@ -215,10 +335,16 @@ def main() -> int:
             if install_dir.exists():
                 raise TimeoutError("NSIS uninstaller did not fully remove the installed app")
     print("NSIS silent install, launch, and uninstall: ok")
+    return True
 
-    print("PASS: packaged app, runtime, daemon, samples, installer and portable ZIP")
-    return 0
+
+def installer_mode(argv: list[str]) -> str:
+    if "--no-installer" in argv:
+        return "skip"
+    if "--installer" in argv:
+        return "force"
+    return "auto"
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(installer_mode(sys.argv[1:])))

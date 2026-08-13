@@ -394,6 +394,43 @@ def set_image_kind(con, file_id: int, kind: str) -> None:
         con.execute("UPDATE files SET image_kind=? WHERE id=?", (kind, file_id))
 
 
+# --- Per-model facet cache (skip re-inference when a model's output for a
+# file is already known — §"per-model tag caching") -------------------------
+
+def get_facet_cache(con, file_id: int, facet: str, model_key: str) -> dict | None:
+    """The cached {"image_kind", "tags": [...]} for this exact (file, facet,
+    model), or None on a cache miss. `tags` entries are plain dicts with
+    category/name/confidence, ready to hand to write_auto_tags() after
+    reconstructing lightweight objects (see worker.py)."""
+    row = con.execute(
+        "SELECT payload FROM facet_model_cache WHERE file_id=? AND facet=? AND model_key=?",
+        (file_id, facet, model_key),
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row["payload"])
+
+
+def set_facet_cache(con, file_id: int, facet: str, model_key: str,
+                     image_kind: str | None, tags) -> None:
+    """Save this model's output for a file so switching away and back restores
+    it without re-running inference. Does not touch file_tags/FTS itself --
+    callers already do that via write_auto_tags()."""
+    payload = json.dumps({
+        "image_kind": image_kind,
+        "tags": [{"category": t.category, "name": t.name, "confidence": t.confidence}
+                  for t in tags],
+    })
+    with con:
+        con.execute(
+            """INSERT INTO facet_model_cache (file_id, facet, model_key, payload, cached_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(file_id, facet, model_key)
+               DO UPDATE SET payload=excluded.payload, cached_at=excluded.cached_at""",
+            (file_id, facet, model_key, payload, int(time.time())),
+        )
+
+
 def set_caption(con, file_id: int, caption: str) -> None:
     """Store a natural-language caption (§11) and refresh FTS so it's searchable."""
     with con:
@@ -939,16 +976,41 @@ def list_errors(con, root_id: int | None = None, limit: int = 200) -> list[dict]
                  path=row["path"], filename=row["filename"]) for row in rows]
 
 
-def reindex_all(con) -> int:
+def reindex_all(con, *, priority: int = 100) -> int:
     """Re-run ingest+infer for every indexed file (used after lowering a model's
     confidence threshold, changing a variant, etc. — a plain Rescan only picks up
     new/changed files by mtime/sha and won't reprocess unchanged ones). enqueue_job
     manages its own transaction per file (mirrors scan.py's rescan loop) and
     already dedups queued/running jobs of the same kind, so calling this twice
-    before the queue drains doesn't double-enqueue. Returns the number queued."""
+    before the queue drains doesn't double-enqueue. Returns the number queued.
+
+    Same "interactive" priority=100 as its scoped sibling reindex_root(), and
+    for the identical reason (see that docstring): at the old default
+    priority=0, a full-library reindex silently joined the tail of whatever
+    background sweep already happened to be queued -- e.g. a caption-variant
+    switch's re-caption backlog -- and could sit behind thousands of older,
+    unrelated jobs for the better part of an hour before doing anything
+    visible. reindex_root() got this fix; reindex_all(), triggered by the same
+    kind of deliberate click, had been missed.
+    """
     file_ids = [r["id"] for r in con.execute("SELECT id FROM files").fetchall()]
     for fid in file_ids:
-        enqueue_job(con, fid, "reindex")
+        enqueue_job(con, fid, "reindex", priority=priority)
+    return len(file_ids)
+
+
+def recaption_all(con, *, priority: int = 100) -> int:
+    """Force-regenerate captions for every file, regardless of whether it
+    already has one -- the Sources page's explicit "↻ Regen all captions"
+    action (§11/§12). Unlike a caption-model switch (which now only fills in
+    files with no caption at all, see daemon._set_variant), this is the
+    deliberate "yes, I want every caption redone with the model I just
+    picked" opt-in. Same "interactive" priority=100 tier as reindex_all(),
+    for the same reason -- see its docstring.
+    """
+    file_ids = [r["id"] for r in con.execute("SELECT id FROM files").fetchall()]
+    for fid in file_ids:
+        enqueue_job(con, fid, "caption", priority=priority)
     return len(file_ids)
 
 
@@ -1057,9 +1119,39 @@ def progress(con) -> dict:
     done = con.execute(
         "SELECT count(*) c FROM files WHERE index_status='done'"
     ).fetchone()["c"]
+    # Per-stage counts for the split Scan/Tag/Caption progress bars (§12).
+    #
+    # All four are counted in *files*, deliberately: the earlier single bar
+    # mixed file counts with job counts, which made "7,503 files" sit next to
+    # "13,565 jobs" with no way to tell they measured different things.
+    #
+    # They are derived from stored output rather than the jobs table because
+    # finished jobs are never deleted -- an ingest bar computed as
+    # done/(done+queued) sits at 99.9% forever and shows nothing. sha256 is
+    # written by ingest() (scan.py inserts a placeholder row with sha256='')
+    # so it marks "this file has actually been read", and WD14/caption have
+    # no job kind of their own at all -- they run as sub-steps inside one
+    # 'infer' job -- so output existence is the only thing that can measure
+    # them.
+    scan_done = con.execute(
+        "SELECT count(*) c FROM files WHERE sha256<>''"
+    ).fetchone()["c"]
+    caption_done = con.execute(
+        "SELECT count(*) c FROM files WHERE caption IS NOT NULL AND caption<>''"
+    ).fetchone()["c"]
+    tag_done = con.execute(
+        "SELECT count(*) c FROM files WHERE image_kind IS NOT NULL"
+    ).fetchone()["c"]
+    # Which stages are actually switched on, so the UI can hide a bar that
+    # could never reach 100% (a Caption bar frozen at 0% while captioning is
+    # off reads as a bug, not as "that feature is disabled").
+    from . import config as _config
+    facets = {f: _config.facet_enabled(con, f) for f in ("wd14", "caption")}
     # "current"/"rss_mb" surface *why* the process is using the memory it's
     # using (§12) -- otherwise a loaded multi-GB model just looks like an
     # unexplained number in Task Manager with no link back to this app.
     from . import status
     return {"files_total": total, "files_done": done, "jobs": by_state,
+            "scan_done": scan_done, "caption_done": caption_done,
+            "tag_done": tag_done, "facets": facets,
             "current": status.get(), "rss_mb": status.rss_mb()}

@@ -185,9 +185,13 @@ app.whenReady().then(async () => {
 
   win.webContents.on("did-finish-load", async () => {
     try {
-      // IPC progress must repaint without requiring any user click.
+      // IPC progress must repaint without requiring any user click. Shaped
+      // like db.progress()'s real payload, including the per-stage counts the
+      // split Scan/Tags/Caption bars read.
       const progressEvent = (done) => ({ files_total: 1412, files_done: done,
-        jobs: { queued: 1412 - done, running: 1, done }, paused: false, mode: 'auto' });
+        jobs: { queued: 1412 - done, running: 1, done },
+        scan_done: 1412, tag_done: 1200, caption_done: 900,
+        facets: { wd14: true, caption: true }, paused: false, mode: 'auto' });
       win.webContents.send('indexer:progress', progressEvent(58));
       await new Promise((r) => setTimeout(r, 100));
       const live58 = await win.webContents.executeJavaScript(
@@ -197,6 +201,27 @@ app.whenReady().then(async () => {
       const live59 = await win.webContents.executeJavaScript(
         `document.querySelector('[data-testid=progress] .pl')?.textContent || ''`);
       const liveProgress = /58\/1412/.test(live58) && /59\/1412/.test(live59);
+      // Per-stage bars (§12): each stage must render a labelled, non-zero-width
+      // track — a bar whose track is invisible or whose fill never moves is the
+      // exact failure this split was meant to remove.
+      const stages = await win.webContents.executeJavaScript(`
+        (() => Array.from(document.querySelectorAll('[data-testid=stagebar] .stage'))
+          .map((s) => ({
+            label: s.querySelector('.stagelabel')?.textContent?.trim(),
+            num: s.querySelector('.stagenum')?.textContent?.trim(),
+            trackW: s.querySelector('.stagetrack')?.getBoundingClientRect().width || 0,
+            fillPct: Math.round(((s.querySelector('.stagefill')?.getBoundingClientRect().width || 0)
+              / (s.querySelector('.stagetrack')?.getBoundingClientRect().width || 1)) * 100),
+          })))();
+      `);
+      // fillPct is measured against the track's border-box, so a fully-filled
+      // bar reads a couple of percent short of 100 (the track carries a 1px
+      // border each side). Assert "visually full" rather than an exact 100.
+      const stagesOk = stages.length === 3
+        && stages.every((s) => s.trackW > 10 && s.num)
+        && stages[0].label === 'Scan' && stages[0].fillPct >= 95
+        && stages[1].label === 'Tags' && stages[1].fillPct > 80 && stages[1].fillPct < 90
+        && stages[2].label === 'Caption' && stages[2].fillPct > 60 && stages[2].fillPct < 70;
 
       // Drive a search in the real renderer, then capture the window.
       await win.webContents.executeJavaScript(`
@@ -402,6 +427,7 @@ app.whenReady().then(async () => {
       console.log(`  feedbackScoped=${JSON.stringify(feedbackScoped)}`);
       console.log(`  previewZoom=${JSON.stringify(previewZoom)}`);
       console.log(`  liveProgress=${JSON.stringify({ live58, live59, ok: liveProgress })}`);
+      console.log(`  stages=${JSON.stringify({ ok: stagesOk, stages })}`);
 
       // Re-enter Models: selected best/accurate variants must remain selected.
       await win.webContents.executeJavaScript(`document.querySelector('[data-testid=properties-dialog] button').click(); document.querySelector('[data-testid=tab-models]').click()`);
@@ -503,7 +529,7 @@ app.whenReady().then(async () => {
       const multiSelectOk = /3 images selected/.test(multiSelect.head) && multiSelect.cells === 3
         && multiSelect.names === 3 && multiSelect.tagsInGrid === 0;
       const ok = /results/.test(count) && rows > 0 && tags > 0 && scrollOk
-        && liveProgress && gridNav.ok
+        && liveProgress && stagesOk && gridNav.ok
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
         && feedbackScoped.controls && !feedbackScoped.stale
         && previewZoom.controls && previewZoom.streamed && previewZoom.naturalWidth === 4096

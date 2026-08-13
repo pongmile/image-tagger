@@ -91,6 +91,56 @@ def _run_scan_async(root_id: int | None, priority: int) -> dict:
     return {"started": True}
 
 
+_file_action_lock = threading.Lock()
+
+
+def _run_file_action_async(action: str, path: str, file_id: int) -> dict:
+    """Re-index / re-caption / re-tag one file on its own thread.
+
+    These deliberately ignore Pause Tagger (§12: a single-file click must act
+    now, on just that file, without resuming the whole queue) -- but they must
+    not run inline in handle(). The command loop is a single
+    `for line in sys.stdin` thread, so a multi-second inference there blocks
+    *every* other RPC, including the Electron side's heartbeat probe, which
+    kills and restarts the daemon after ~3 missed polls (see indexer.js's
+    HEARTBEAT_MAX_FAILURES). Cold model loads plus waiting on INFERENCE_LOCK
+    for whatever file the background worker is already mid-way through makes
+    that a realistic, not theoretical, timeout. Same reasoning and shape as
+    _run_scan_async; the caller gets the real outcome via a "file_done" event.
+    """
+    if not _file_action_lock.acquire(blocking=False):
+        return {"started": False,
+                "error": "another single-file action is still running"}
+
+    def runner():
+        con2 = db.connect(check_same_thread=False)
+        try:
+            from . import worker as _worker
+            if action == "reindex":
+                from .ingest import ingest as _ingest
+                db.upsert_file(con2, _ingest(path))
+                _worker._run_infer(con2, file_id, force=True)
+            elif action == "recaption":
+                _worker._run_caption(con2, file_id)
+            else:
+                _worker._run_tag(con2, file_id)
+            _emit({"event": "file_done", "action": action, "path": path, "ok": True})
+        except Exception as e:
+            _emit({"event": "file_done", "action": action, "path": path,
+                   "ok": False, "error": repr(e)})
+        finally:
+            _file_action_lock.release()
+            try:
+                _emit({"event": "progress", **db.progress(con2),
+                       "paused": _paused.is_set(),
+                       "mode": db.get_setting(con2, "index_mode", "auto")})
+            finally:
+                con2.close()
+
+    threading.Thread(target=runner, daemon=True).start()
+    return {"started": True}
+
+
 def _emit(obj: dict) -> None:
     # Serialize writes: worker/download threads + the main loop all share stdout,
     # and interleaved partial lines would corrupt the JSON-RPC stream.
@@ -144,6 +194,13 @@ def handle(con, msg: dict) -> dict:
             # Regenerate just the caption/description for one file (§11) — the
             # preview pane's "↻ re-Description" button. Narrower than
             # reindex_file: doesn't touch OCR/wd14/clip/faces.
+            #
+            # Bypasses the (pausable) job queue entirely: a deliberate
+            # single-file click must happen right now regardless of Pause
+            # Tagger, and must never touch anything but this one file (§12).
+            # The cheap validation below stays inline so a mistake reports
+            # immediately; the actual inference runs on its own thread — see
+            # _run_file_action_async for why it must not block this loop.
             import os
             from . import engine as engine_config
             row = con.execute("SELECT id FROM files WHERE path=?",
@@ -159,16 +216,36 @@ def handle(con, msg: dict) -> dict:
                 result = {"ok": False,
                           "error": f"{ready_reason} — install it on the Models tab"}
             else:
-                jid = db.enqueue_job(con, row["id"], "caption", priority=100)
-                result = {"ok": True, "queued": True, "job_id": jid}
-            _emit({"event": "progress", **db.progress(con),
-                   "paused": _paused.is_set(),
-                   "mode": db.get_setting(con, "index_mode", "auto")})
-        elif cmd == "reindex_file":
-            # Re-run ingest+infer for one file (§11 re-caption / refresh a stale
-            # result). Enqueues a reindex job the worker picks up.
+                started = _run_file_action_async("recaption", msg["path"], row["id"])
+                result = {"ok": bool(started.get("started")), **started}
+        elif cmd == "retag_file":
+            # Regenerate just the WD14 tags for one file — the preview pane's
+            # "↻ re-Tag" button. Narrower than reindex_file: doesn't touch
+            # OCR/caption/clip/faces. Same pause-bypassing, single-file-only,
+            # off-the-RPC-thread treatment as recaption_file above; always
+            # forces fresh inference (bypasses the per-model cache too).
             import os
             row = con.execute("SELECT id FROM files WHERE path=?",
+                              (msg["path"],)).fetchone()
+            if row is None:
+                result = {"ok": False, "error": "file not indexed"}
+            elif not os.path.isfile(msg["path"]):
+                result = {"ok": False, "error": "file no longer exists"}
+            elif not config.facet_enabled(con, "wd14"):
+                result = {"ok": False, "error": "tagging is disabled — enable it on the Models tab"}
+            else:
+                started = _run_file_action_async("retag", msg["path"], row["id"])
+                result = {"ok": bool(started.get("started")), **started}
+        elif cmd == "reindex_file":
+            # Re-run ingest+infer for one file (§11 re-caption / refresh a stale
+            # result) — the preview pane's "↻ re-index" button. Same
+            # pause-bypassing, single-file-only, off-the-RPC-thread treatment
+            # as recaption_file/retag_file above (§12: never "Resume all", only
+            # this one file, right now). Always forces fresh inference on
+            # every facet, bypassing the per-model caches too -- that's the
+            # point of an explicit re-index click.
+            import os
+            row = con.execute("SELECT id, path FROM files WHERE path=?",
                               (msg["path"],)).fetchone()
             if row is None:
                 result = {"ok": False, "error": "file not indexed"}
@@ -177,11 +254,8 @@ def handle(con, msg: dict) -> dict:
                 result = {"ok": False, "removed": True,
                           "error": "file no longer exists; stale index row removed"}
             else:
-                jid = db.enqueue_job(con, row["id"], "reindex", priority=100)
-                result = {"ok": True, "queued": True, "job_id": jid}
-            _emit({"event": "progress", **db.progress(con),
-                   "paused": _paused.is_set(),
-                   "mode": db.get_setting(con, "index_mode", "auto")})
+                started = _run_file_action_async("reindex", msg["path"], row["id"])
+                result = {"ok": bool(started.get("started")), **started}
         elif cmd == "work":
             result = {"processed": drain(con, max_jobs=msg.get("max"))}
         elif cmd == "progress":
@@ -206,6 +280,24 @@ def handle(con, msg: dict) -> dict:
             _emit({"event": "progress", **db.progress(con),
                    "paused": _paused.is_set(),
                    "mode": db.get_setting(con, "index_mode", "auto")})
+        elif cmd == "recaption_all":
+            # Explicit "↻ Regen all captions" (Sources page) — the deliberate
+            # opt-in to redo every caption with the currently-selected model.
+            # Unlike a caption-model switch (which no longer force-recaptions
+            # anything on its own, see _set_variant), this always touches
+            # every file, matching/mirroring reindex_all's semantics.
+            from . import engine as engine_config
+            ready, ready_reason = engine_config.facet_model_ready(con, "caption")
+            if not config.facet_enabled(con, "caption"):
+                result = {"ok": False, "error": "captioning is disabled — enable it on the Models tab"}
+            elif not ready:
+                result = {"ok": False,
+                          "error": f"{ready_reason} — install it on the Models tab"}
+            else:
+                result = {"ok": True, "queued": db.recaption_all(con)}
+                _emit({"event": "progress", **db.progress(con),
+                       "paused": _paused.is_set(),
+                       "mode": db.get_setting(con, "index_mode", "auto")})
         elif cmd == "recaption_root":
             from . import engine as engine_config
             ready, ready_reason = engine_config.facet_model_ready(con, "caption")
@@ -263,6 +355,8 @@ def handle(con, msg: dict) -> dict:
             result = _learn_feedback(con, msg, +1)
         elif cmd == "learn_reject":
             result = _learn_feedback(con, msg, -1)
+        elif cmd == "learn_forget":
+            result = _learn_forget(con, msg)
         elif cmd == "reject_tag":
             result = _reject_auto_tag(con, msg)
         elif cmd == "confirm_tag":
@@ -353,14 +447,12 @@ def _set_variant(con, facet: str, variant_id: str) -> dict:
         if old and old.get("dim") != new.get("dim"):
             vec.drop(con)
             reindex = True
-    elif facet == "caption":
-        old = engine.selected_variant(con, "caption")
-        if old and old.get("id") != variant_id:
-            # Every file that already has a caption was written by the
-            # *previous* model — it's now stale, not just "missing", so queue
-            # a fresh "caption" job for it too (enqueue_missing_captions only
-            # catches files with no caption at all).
-            recaptioned = db.enqueue_job_for_captioned_files(con)
+    # Note: switching the caption (or wd14) variant no longer force-recaptions
+    # every already-captioned file. Existing captions are left alone -- only
+    # files with no caption yet get queued (enqueue_missing_captions, called
+    # separately) -- and a full redo is an explicit opt-in via "↻ Regen all
+    # captions" on the Sources page (db.recaption_all), not an automatic side
+    # effect of picking a model in Settings.
     db.set_setting(con, f"{facet}_variant", variant_id)
     return {"ok": True, "facet": facet, "id": variant_id, "reindex_needed": reindex,
             "recaptioning": recaptioned}
@@ -594,6 +686,27 @@ def _learn_feedback(con, msg: dict, label: int) -> dict:
     return {"ok": True}
 
 
+def _learn_forget(con, msg: dict) -> dict:
+    """Reset one tag's few-shot state (§5.3) — the Learned tags view's Delete.
+
+    Resolved against `tags`, not `learned_tags`, so a tag that is still only
+    accumulating examples ("In progress", no trained row yet) can be cleared
+    too; that is exactly where a run of bad confirms tends to be visible first.
+    Never creates a tag the way get_or_create_tag would: an unknown name is an
+    error, not a new empty tag.
+    """
+    from . import learned
+    row = con.execute(
+        """SELECT t.id AS tag_id FROM tags t
+             JOIN categories c ON c.id=t.category_id
+            WHERE c.name=? AND t.name=?""",
+        (msg["category"], msg["name"]),
+    ).fetchone()
+    if row is None:
+        return {"ok": False, "error": "no such tag"}
+    return learned.forget(con, int(row["tag_id"]))
+
+
 def _reject_auto_tag(con, msg: dict) -> dict:
     """Remove a wrong auto-tag (wd14/clip/learned/manual/path) from one file:
     delete it, remember the rejection so reindex/rescan never silently re-adds
@@ -818,7 +931,13 @@ def _dependency_install_worker(facet: str) -> None:
             directml_gpu = bool(out)
         except Exception:
             directml_gpu = False
-    pip = [sys.executable, "-m", "pip", "install",
+    # --upgrade is not optional here: without it `pip --target` *skips* any
+    # package directory that already exists ("Target directory ... already
+    # exists. Specify --upgrade to force replacement") while still writing the
+    # new .dist-info beside it. That leaves the tree claiming a version whose
+    # compiled modules were never unpacked -- exactly the state that makes
+    # `import numpy` fail with a missing _multiarray_umath on the next launch.
+    pip = [sys.executable, "-m", "pip", "install", "--upgrade",
            "--break-system-packages", "--disable-pip-version-check",
            "--no-warn-script-location", "--no-input",
            "--target", str(config.RUNTIME_PACKAGES_DIR)]
@@ -871,7 +990,7 @@ def _dependency_install_worker(facet: str) -> None:
             "jinja2", "fsspec",
         ])
         commands.append(pip + [
-            "--upgrade", "--ignore-installed", "--force-reinstall", "--no-deps",
+            "--ignore-installed", "--force-reinstall", "--no-deps",
             "torch==2.11.0", "torchvision==0.26.0", "--index-url", torch_index
         ])
 
@@ -1186,10 +1305,35 @@ def _progress_change_key(p: dict) -> dict:
     return d
 
 
+def _learned_input_fingerprint(con) -> tuple:
+    """Cheap "has anything a learned tag could score changed?" signal.
+
+    Counts only -- no scan of the embeddings themselves. Used by the paused
+    branch of the worker loop so a full-library rescore happens when there is
+    actually new input (a pause-bypassing single-file re-index produced an
+    embedding or faces, or the user trained/confirmed/reset a tag) instead of
+    on every timer tick.
+    """
+    def count(sql: str) -> int:
+        try:
+            return int(con.execute(sql).fetchone()[0])
+        except Exception:
+            return -1  # table absent (e.g. file_vec before CLIP ever ran)
+
+    return (
+        count("SELECT count(*) FROM faces"),
+        count("SELECT count(*) FROM file_vec"),
+        count("SELECT count(*) FROM learned_tags"),
+        count("SELECT coalesce(max(updated_at), 0) FROM learned_tags"),
+    )
+
+
 def _worker_thread(stop: threading.Event) -> None:
     """--auto mode: continuously drain the queue + push progress events."""
     con = db.connect(check_same_thread=False)
     last = None
+    last_learned_sweep = 0.0
+    last_learned_fingerprint = _learned_input_fingerprint(con)
     while not stop.is_set():
         # Written every iteration before the (possibly slow) drain() call
         # below, and again from inside worker.py at each facet boundary
@@ -1200,8 +1344,28 @@ def _worker_thread(stop: threading.Event) -> None:
         # leaves the clock stale long enough to trip it.
         heartbeat.beat()
         if _paused.is_set():
-            # Paused: leave the queue untouched but still surface state once so
-            # the UI can show the paused progress bar (§12).
+            # Paused: leave the heavy wd14/caption/faces/clip inference queue
+            # untouched, but Learned tags keeps working regardless of pause
+            # (§12) -- it's cheap vector math against embeddings that already
+            # exist, not GPU inference, so it doesn't defeat the point of
+            # pausing.
+            #
+            # Guarded by a change detector, not just a timer: learned.apply()
+            # rewrites every matching file's file_tags row and its FTS entry
+            # on each pass, so re-running it unconditionally would keep the
+            # disk (and the WAL) busy forever while the user believes the app
+            # is paused -- the exact opposite of what Pause is for. The three
+            # cheap counts below only move when there is genuinely something
+            # new to score (a single-file re-index landed a new embedding or
+            # faces while paused, or the user trained/confirmed a tag).
+            now = time.monotonic()
+            if now - last_learned_sweep >= 5.0:
+                last_learned_sweep = now
+                fingerprint = _learned_input_fingerprint(con)
+                if fingerprint != last_learned_fingerprint:
+                    from . import learned
+                    learned.apply_all(con)
+                    last_learned_fingerprint = fingerprint
             status.set_idle()
             p = {**db.progress(con), "paused": True,
                  "mode": db.get_setting(con, "index_mode", "auto")}

@@ -2,27 +2,106 @@
 // once and speaks line-delimited JSON over stdio: each call gets an id and
 // resolves when the matching response line arrives. Unsolicited {event:...}
 // lines (progress in --auto mode) are re-emitted as events.
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { EventEmitter } = require("events");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
 
+// Resolved per call, not once at load: tests (and portable profiles) point
+// IMAGE_TAGGER_HOME at their own directory, sometimes after this module is
+// already required, and must not be judged against the real user's packages.
+function runtimePackagesDir() {
+  return path.join(
+    process.env.IMAGE_TAGGER_HOME || path.join(os.homedir(), ".image-tagger"),
+    "runtime-packages"
+  );
+}
+
+// Mirror of config.foreign_abi_tag: report the CPython ABI the installed
+// optional dependencies were compiled for. `pip --target` bakes that in at
+// install time, so a tree filled by the packaged 3.12 runtime is unimportable
+// from, say, a 3.10 dev venv -- and because config.py puts the directory first
+// on sys.path, the mismatch kills the daemon on `import numpy` before it can
+// say why. Picking a matching interpreter here avoids the situation entirely.
+// Bounded (three levels, `budget` directories) so a multi-gigabyte tree of
+// model weights stays cheap to inspect, and stops at the first tagged module.
+function runtimePackagesAbiTag(directory = runtimePackagesDir(), budget = 500) {
+  const stack = [[directory, 0]];
+  while (stack.length && budget-- > 0) {
+    const [current, depth] = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue; // unreadable or missing: nothing to learn here
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (depth < 2) stack.push([path.join(current, entry.name), depth + 1]);
+        continue;
+      }
+      // abi3 modules import on every later 3.x, so their tag is a floor rather
+      // than a requirement -- they say nothing about which interpreter to pick.
+      if (entry.name.includes("abi3") || !/\.(pyd|so)$/.test(entry.name)) continue;
+      const found = /\.cp(\d{2,3})-/.exec(entry.name);
+      if (found) return `cp${found[1]}`;
+    }
+  }
+  return null;
+}
+
+const abiTagCache = new Map();
+function interpreterAbiTag(python) {
+  if (abiTagCache.has(python)) return abiTagCache.get(python);
+  let tag = null;
+  try {
+    const probe = spawnSync(
+      python,
+      ["-c", "import sys;print('cp%d%d' % sys.version_info[:2])"],
+      { encoding: "utf8", timeout: 10_000 }
+    );
+    if (!probe.error && probe.status === 0) tag = String(probe.stdout).trim() || null;
+  } catch {
+    tag = null;
+  }
+  abiTagCache.set(python, tag);
+  return tag;
+}
+
 function venvPython(indexerDir) {
-  const win = path.join(indexerDir, ".venv", "Scripts", "python.exe");
-  const nix = path.join(indexerDir, ".venv", "bin", "python");
-  const bundledWin = process.resourcesPath
-    ? path.join(process.resourcesPath, "python", "python.exe")
-    : null;
-  const bundledNix = process.resourcesPath
-    ? path.join(process.resourcesPath, "python", "bin", "python3")
-    : null;
-  if (process.env.IMAGE_TAGGER_PYTHON) return process.env.IMAGE_TAGGER_PYTHON;
-  if (fs.existsSync(win)) return win;
-  if (fs.existsSync(nix)) return nix;
-  if (bundledWin && fs.existsSync(bundledWin)) return bundledWin;
-  if (bundledNix && fs.existsSync(bundledNix)) return bundledNix;
-  return os.platform() === "win32" ? "python" : "python3"; // last resort
+  // An override pointing at an interpreter that is no longer there (a cleaned
+  // build/python, a deleted venv) would otherwise spawn ENOENT and reach the
+  // user as the same opaque "daemon exited during startup" dialog. Fall through
+  // to the normal search instead. A bare command name is honoured as-is: it
+  // resolves against PATH, not the filesystem.
+  const override = process.env.IMAGE_TAGGER_PYTHON;
+  if (override && (!/[\\/]/.test(override) || fs.existsSync(override))) return override;
+
+  const candidates = [
+    path.join(indexerDir, ".venv", "Scripts", "python.exe"),
+    path.join(indexerDir, ".venv", "bin", "python"),
+    // Packaged: the runtime shipped beside the app resources.
+    process.resourcesPath && path.join(process.resourcesPath, "python", "python.exe"),
+    process.resourcesPath && path.join(process.resourcesPath, "python", "bin", "python3"),
+    // Dev: the same runtime `npm run prepare:runtime` stages for packaging. It
+    // is the interpreter the Models screen installs against once the app has
+    // been packaged on this machine, so it is often the only one that can load
+    // what is already in runtime-packages.
+    path.join(indexerDir, "..", "desktop", "build", "python", "python.exe"),
+    path.join(indexerDir, "..", "desktop", "build", "python", "bin", "python3"),
+  ].filter((candidate) => candidate && fs.existsSync(candidate));
+
+  const needed = runtimePackagesAbiTag();
+  if (needed) {
+    const compatible = candidates.find((c) => interpreterAbiTag(c) === needed);
+    if (compatible) return compatible;
+  }
+  // No optional dependencies installed yet, or none of the interpreters can
+  // load them: fall back to the usual preference. config.py then leaves the
+  // mismatched directory off sys.path so startup still succeeds, minus the
+  // optional facets.
+  return candidates[0] || (os.platform() === "win32" ? "python" : "python3");
 }
 
 // Resilience tuning (§7 "survive crashes and recover"): a hung worker loop

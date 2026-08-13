@@ -204,6 +204,21 @@ INSERT OR IGNORE INTO clip_labels (category, label) VALUES
   ('pose','standing'),('pose','sitting'),('pose','lying down'),
   ('pose','running'),('pose','walking'),('pose','jumping');
 
+-- Per-model facet output cache. A file switching between two previously-used
+-- models (e.g. WD14 variant A -> B -> A) restores instantly from here instead
+-- of re-running inference, and file_tags/search only ever reflect whichever
+-- model is currently active -- an inactive model's cached output sits here,
+-- invisible to search, until its model is selected again.
+CREATE TABLE IF NOT EXISTS facet_model_cache (
+  file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  facet      TEXT NOT NULL,        -- 'wd14' today; extensible later
+  model_key  TEXT NOT NULL,        -- the variant id active when this was produced
+  payload    TEXT NOT NULL,        -- JSON: {"image_kind": "...", "tags": [{"category","name","confidence"}, ...]}
+  cached_at  INTEGER,
+  PRIMARY KEY (file_id, facet, model_key)
+);
+CREATE INDEX IF NOT EXISTS idx_facet_cache_file ON facet_model_cache(file_id);
+
 -- Note: the CLIP embedding store `file_vec` is a sqlite-vec vec0 virtual table
 -- created lazily by indexer/vec.py once CLIP runs (it needs the sqlite-vec
 -- extension loaded, so it can't live in this always-applied schema). Semantic

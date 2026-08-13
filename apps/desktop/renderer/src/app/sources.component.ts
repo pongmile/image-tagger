@@ -1,6 +1,6 @@
 import { Component, effect, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { ErrorRow, ExcludeRule, Root, getApi } from './api';
+import { ErrorRow, ExcludeRule, Root, Progress, getApi } from './api';
 import { LibraryService } from './library.service';
 
 /** Sources / scan scope (spec §7.0): the include/exclude drives & folders that
@@ -27,11 +27,17 @@ import { LibraryService } from './library.service';
                   data-testid="reindex-all">
             {{ reindexingAll() ? 're-indexing…' : '↻ Reindex' }}
           </button>
+          <button (click)="recaptionAll()" [disabled]="recaptioningAll()"
+                  title="force-regenerate every file's caption with the currently-selected model — a plain model switch in Settings no longer does this automatically"
+                  data-testid="recaption-all">
+            {{ recaptioningAll() ? 're-describing…' : '↻ Regen all captions' }}
+          </button>
         </div>
       </div>
 
       @if (rescanMsg()) { <div class="msg" data-testid="rescan-msg">{{ rescanMsg() }}</div> }
       @if (reindexAllMsg()) { <div class="msg" data-testid="reindex-all-msg">{{ reindexAllMsg() }}</div> }
+      @if (recaptionAllMsg()) { <div class="msg" data-testid="recaption-all-msg">{{ recaptionAllMsg() }}</div> }
 
       @let ovp = lib.progress();
       @if (ovp) {
@@ -44,6 +50,15 @@ import { LibraryService } from './library.service';
             {{ ovp.files_done | number }}/{{ ovp.files_total | number }}
             @if (!ovp.paused && ovp.current && ovp.current !== 'idle') { <span class="ovcurrent">· {{ ovp.current }}</span> }
           </span>
+        </div>
+        <div class="ovsplit" data-testid="overall-progress-split">
+          @for (row of ovCategories(ovp); track row.label) {
+            <div class="ovmini" [title]="row.title">
+              <span class="ovminilabel">{{ row.label }}</span>
+              <div class="ovminitrack"><div class="ovminifill" [style.width.%]="row.pct"></div></div>
+              <span class="ovmininum">{{ row.done | number }}/{{ row.total | number }}</span>
+            </div>
+          }
         </div>
       }
 
@@ -265,6 +280,17 @@ import { LibraryService } from './library.service';
     .ovcurrent { display: inline-block; max-width: 260px; overflow: hidden;
                  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
     @media (max-width: 900px) { .ovcurrent { max-width: 120px; } }
+    .ovsplit { display: flex; gap: 18px; margin: 0 0 10px; flex-wrap: wrap; }
+    .ovmini { display: flex; align-items: center; gap: 6px; }
+    .ovminilabel { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+    /* Explicit border, not just a fill colour: an empty track on var(--bg-2)
+       was invisible against the page on the dark theme. */
+    .ovminitrack { position: relative; width: 88px; height: 8px; border-radius: 999px;
+                   background: var(--bg); overflow: hidden; border: 1px solid var(--border); }
+    .ovminifill { position: absolute; inset: 0 auto 0 0; background: var(--accent);
+                  border-radius: 999px; transition: width .3s; }
+    .ovmininum { font-size: 10px; color: var(--fg-dim); white-space: nowrap;
+                 font-variant-numeric: tabular-nums; }
 
     /* Per-root indexed column: a compact fill bar instead of bare numbers,
        with pending/error state as small chips underneath -- not stacked text. */
@@ -328,6 +354,8 @@ export class SourcesComponent {
   readonly rescanningRoot = signal<number | null>(null);
   readonly reindexingAll = signal(false);
   readonly reindexAllMsg = signal('');
+  readonly recaptioningAll = signal(false);
+  readonly recaptionAllMsg = signal('');
   readonly reindexingRoot = signal<number | null>(null);
   readonly recaptioningRoot = signal<number | null>(null);
   readonly errorsOpenFor = signal<number | null>(null);
@@ -338,6 +366,29 @@ export class SourcesComponent {
   readonly hasLoaded = signal(false);
   readonly loadError = signal('');
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Per-stage rows (§12 observability), all counted in files out of the same
+  // files_total so they are directly comparable. Derived from stored output
+  // rather than the jobs table — finished jobs are never deleted, so a
+  // job-ratio bar would sit near 100% forever and show nothing. Stages the
+  // backend didn't report, or that are switched off, are omitted instead of
+  // being drawn permanently empty.
+  ovCategories(p: Progress): { label: string; title: string; done: number; total: number; pct: number }[] {
+    const total = p.files_total;
+    if (!total) return [];
+    const rows: { label: string; title: string; done: number; total: number; pct: number }[] = [];
+    const add = (label: string, title: string, done: number | undefined) => {
+      if (done == null) return;
+      rows.push({ label, title, done, total, pct: Math.round((done / total) * 100) });
+    };
+    // No 'Index' row: the ovbar directly above already shows exactly that
+    // ("● indexing 16/7,520"), and repeating the same numbers beneath it
+    // reads as a rendering bug rather than as extra detail.
+    add('Scan', 'files read from disk (hash, dimensions, thumbnail)', p.scan_done);
+    if (p.facets?.['wd14'] !== false) add('Tags', 'WD14 general/character tagging', p.tag_done);
+    if (p.facets?.['caption'] !== false) add('Caption', 'natural-language description', p.caption_done);
+    return rows;
+  }
 
   constructor() {
     void this.refresh();
@@ -457,6 +508,23 @@ export class SourcesComponent {
       this.reindexAllMsg.set(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.reindexingAll.set(false);
+    }
+  }
+
+  // Explicit opt-in force-recaption of every file (§11/§12) — a caption-model
+  // switch in Settings no longer does this on its own (see daemon._set_variant),
+  // so this button is the deliberate "yes, redo every caption" action.
+  async recaptionAll() {
+    if (this.recaptioningAll()) return;
+    this.recaptioningAll.set(true);
+    this.recaptionAllMsg.set('Queuing every file for a fresh caption…');
+    try {
+      const r = await this.lib.recaptionAll();
+      this.recaptionAllMsg.set(`Queued ${r.queued} file(s). Resume Tagger/auto-mode will pick them up.`);
+    } catch (e) {
+      this.recaptionAllMsg.set(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.recaptioningAll.set(false);
     }
   }
 

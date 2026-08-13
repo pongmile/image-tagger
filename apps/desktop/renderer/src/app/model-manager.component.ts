@@ -235,18 +235,24 @@ export class ModelManagerComponent implements OnDestroy {
   private lib = inject(LibraryService);
   private api = getApi();
   private readonly zone = inject(NgZone);
-  readonly facets = signal<Facet[]>([]);
+  // Seeded from the cross-navigation cache (library.service.ts's
+  // modelStateCache) so a page revisit shows the last-known model status
+  // immediately instead of a loading spinner — refresh() below still always
+  // runs to pick up anything new, silently when a cache already exists.
+  private readonly cachedState = this.lib.modelStateCache();
+  readonly facets = signal<Facet[]>(this.cachedState?.facets ?? []);
   readonly dl = signal<Record<string, DownloadProgress>>({});
   readonly modelsDir = signal('');
-  readonly dir = signal('…');
+  readonly dir = signal(this.cachedState?.models_dir ?? '…');
   readonly downloadingAll = signal(false);
-  readonly variants = signal<Record<string, FacetVariants>>({});
-  readonly tier = signal('');
+  readonly variants = signal<Record<string, FacetVariants>>(
+    Object.fromEntries((this.cachedState?.variants ?? []).map((v) => [v.facet, v])));
+  readonly tier = signal(this.cachedState?.variants?.[0]?.tier ?? '');
   readonly reindexNote = signal(false);
   readonly toggling = signal<string | null>(null);
   readonly notice = signal('');
   readonly refreshing = signal(false);
-  readonly hasLoaded = signal(false);
+  readonly hasLoaded = signal(this.cachedState != null);
   readonly loadError = signal('');
   // Locally-picked-but-not-yet-applied variant per facet (§12 Models UX):
   // browsing the dropdown must never itself change what's active. Cleared to
@@ -301,6 +307,7 @@ export class ModelManagerComponent implements OnDestroy {
       if (state.variants[0]) this.tier.set(state.variants[0].tier);
       this.mergeStatuses(state.downloads);
       this.loadError.set('');
+      this.lib.modelStateCache.set(state);
     } catch (e) {
       if (mine === this.refreshSeq)
         this.loadError.set(e instanceof Error ? e.message : String(e));

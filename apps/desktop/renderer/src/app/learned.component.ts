@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, computed, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { LearnedTagRow, TagProgressRow, getApi } from './api';
 
@@ -21,6 +21,13 @@ import { LearnedTagRow, TagProgressRow, getApi } from './api';
         <button (click)="refresh()">Refresh list</button>
       </div>
 
+      @if (resetMsg()) {
+        <div class="resetbanner" data-testid="reset-msg">
+          {{ resetMsg() }}
+          <button (click)="resetMsg.set('')">Dismiss</button>
+        </div>
+      }
+
       @if (loading()) {
         <div class="loadbar" data-testid="loading"><div class="stripe"></div></div>
         <p class="dim">Loading learned tags…</p>
@@ -42,6 +49,25 @@ import { LearnedTagRow, TagProgressRow, getApi } from './api';
               <div class="bar"><div class="fill" [style.width.%]="(p.n_pos / minPositives()) * 100"></div></div>
               <div class="row">{{ p.n_pos }} / {{ minPositives() }} positive example(s) needed
                 @if (p.n_neg > 0) { <span class="dim">· {{ p.n_neg }} negative</span> }</div>
+              <div class="cardbtns">
+                @if (confirmingId() === p.tag_id) {
+                  <button class="danger" (click)="forgetTag(p)" [disabled]="busy()"
+                          data-testid="confirm-delete-tag">
+                    {{ forgettingId() === p.tag_id ? 'resetting…' : 'Yes, reset' }}
+                  </button>
+                  <button (click)="confirmingId.set(null)" [disabled]="busy()"
+                          data-testid="cancel-delete-tag">Cancel</button>
+                } @else {
+                  <button class="danger" (click)="confirmingId.set(p.tag_id)" [disabled]="busy()"
+                          title="discard the examples taught so far for this tag"
+                          data-testid="delete-tag">Delete</button>
+                }
+              </div>
+              @if (confirmingId() === p.tag_id) {
+                <div class="warn">Discards all {{ p.n_pos + p.n_neg }} example(s) taught so far.
+                  Your own manual tags keep this tag as-is.</div>
+              }
+              @if (cardMsg().tagId === p.tag_id) { <div class="hint">{{ cardMsg().text }}</div> }
             </div>
           }
         </div>
@@ -57,11 +83,28 @@ import { LearnedTagRow, TagProgressRow, getApi } from './api';
               <div class="row">{{ t.n_pos }} positive / {{ t.n_neg }} negative example(s)</div>
               <div class="row">threshold {{ t.threshold | number:'1.2-2' }} · applied to {{ t.applied }} file(s)</div>
               <div class="cardbtns">
-                <button (click)="refreshTag(t)" [disabled]="refreshingId() === t.tag_id" data-testid="refresh-tag">
+                <button (click)="refreshTag(t)" [disabled]="busy()" data-testid="refresh-tag">
                   {{ refreshingId() === t.tag_id ? 'refreshing…' : '↻ Refresh' }}
                 </button>
+                @if (confirmingId() === t.tag_id) {
+                  <button class="danger" (click)="forgetTag(t)" [disabled]="busy()"
+                          data-testid="confirm-delete-tag">
+                    {{ forgettingId() === t.tag_id ? 'resetting…' : 'Yes, reset' }}
+                  </button>
+                  <button (click)="confirmingId.set(null)" [disabled]="busy()"
+                          data-testid="cancel-delete-tag">Cancel</button>
+                } @else {
+                  <button class="danger" (click)="confirmingId.set(t.tag_id)" [disabled]="busy()"
+                          title="undo this tag's auto-tagging and forget what it learned"
+                          data-testid="delete-tag">Delete</button>
+                }
               </div>
-              @if (refreshMsg().tagId === t.tag_id) { <div class="hint">{{ refreshMsg().text }}</div> }
+              @if (confirmingId() === t.tag_id) {
+                <div class="warn">Removes this tag from the {{ t.applied }} file(s) it was
+                  auto-applied to and forgets all {{ t.n_pos + t.n_neg }} example(s). Files you
+                  tagged by hand keep it, and nothing gets re-suggested until you teach it again.</div>
+              }
+              @if (cardMsg().tagId === t.tag_id) { <div class="hint">{{ cardMsg().text }}</div> }
             </div>
           }
         </div>
@@ -89,9 +132,23 @@ import { LearnedTagRow, TagProgressRow, getApi } from './api';
     .card.inprogress { border-style: dashed; }
     .bar { height: 6px; border-radius: 999px; background: var(--bg); overflow: hidden; }
     .bar .fill { height: 100%; background: var(--tag-learned); transition: width .3s; }
-    .cardbtns { display: flex; margin-top: 2px; }
+    .cardbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
     .cardbtns button { font-size: 12px; padding: 5px 11px; }
+    .cardbtns .danger { margin-left: auto; color: #fca5a5;
+                        border-color: color-mix(in srgb, #ef4444 40%, var(--border)); }
+    .cardbtns .danger:hover:not(:disabled) { background: color-mix(in srgb, #ef4444 22%, var(--bg-2)); }
+    /* Once the confirm step is showing, "Yes, reset" sits next to Cancel
+       rather than pushed to the far edge away from it. */
+    .cardbtns [data-testid=confirm-delete-tag] { margin-left: auto; }
+    .cardbtns [data-testid=cancel-delete-tag] { margin-left: 0; }
     .hint { font-size: 11px; color: var(--fg-dim); }
+    .warn { font-size: 11px; line-height: 1.45;
+            color: color-mix(in srgb, #ef4444 55%, var(--fg)); }
+    .resetbanner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 12px;
+                   background: color-mix(in srgb, var(--accent) 12%, var(--bg-2));
+                   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+                   display: flex; align-items: center; gap: 10px; }
+    .resetbanner button { margin-left: auto; font-size: 12px; }
     /* Right after launch the daemon may still be starting up, so the very
        first fetch here can take a moment or transiently fail -- without this,
        the page just sat empty indistinguishably from "you have no learned
@@ -117,7 +174,19 @@ export class LearnedComponent {
   readonly loading = signal(true);
   readonly loadError = signal('');
   readonly refreshingId = signal<number | null>(null);
-  readonly refreshMsg = signal<{ tagId: number | null; text: string }>({ tagId: null, text: '' });
+  readonly forgettingId = signal<number | null>(null);
+  // Which card is showing its "Yes, reset / Cancel" step. Delete is
+  // irreversible and silently changes tags across the whole library, so it
+  // never fires on a single click.
+  readonly confirmingId = signal<number | null>(null);
+  readonly cardMsg = signal<{ tagId: number | null; text: string }>({ tagId: null, text: '' });
+  // Result of the last reset. Lives on the page, not the card: a successful
+  // reset removes the card it was triggered from.
+  readonly resetMsg = signal('');
+
+  /** One card's action at a time — both operations retrain/rewrite the same
+   *  file_tags rows, and the list is reloaded afterwards either way. */
+  readonly busy = computed(() => this.refreshingId() != null || this.forgettingId() != null);
 
   constructor() { void this.refresh(); }
 
@@ -141,12 +210,12 @@ export class LearnedComponent {
   // reject to trigger a retrain, or just to re-score the library against
   // recently-added files.
   async refreshTag(t: LearnedTagRow) {
-    if (this.refreshingId() != null) return;
+    if (this.busy()) return;
     this.refreshingId.set(t.tag_id);
-    this.refreshMsg.set({ tagId: null, text: '' });
+    this.cardMsg.set({ tagId: null, text: '' });
     try {
       const r = await this.api.indexer.learn(t.category, t.name, t.space);
-      this.refreshMsg.set({
+      this.cardMsg.set({
         tagId: t.tag_id,
         text: r.ok
           ? `Retrained from ${r.n_pos ?? t.n_pos} example(s) — now applied to ${r.applied ?? 0} file(s).`
@@ -155,6 +224,31 @@ export class LearnedComponent {
       if (r.ok) await this.refresh();
     } finally {
       this.refreshingId.set(null);
+    }
+  }
+
+  // Reset a tag that has learned the wrong thing (§5.3): every auto-applied
+  // instance is withdrawn and the training state is dropped, so the tag falls
+  // back to plain manual/base-model tagging. Retraining can't do this — it only
+  // ever adds to the same examples that produced the bad behaviour.
+  async forgetTag(t: { tag_id: number; category: string; name: string }) {
+    if (this.busy()) return;
+    this.forgettingId.set(t.tag_id);
+    this.cardMsg.set({ tagId: null, text: '' });
+    try {
+      const r = await this.api.indexer.learnForget(t.category, t.name);
+      if (r.ok) {
+        // The card itself disappears on reload, so report on the list instead.
+        this.resetMsg.set(
+          `Reset "${t.name}" — removed it from ${r.unapplied ?? 0} auto-tagged file(s)` +
+          ` and forgot ${r.examples_cleared ?? 0} example(s). Manual tags kept.`);
+        this.confirmingId.set(null);
+        await this.refresh();
+      } else {
+        this.cardMsg.set({ tagId: t.tag_id, text: `Reset failed: ${r.error ?? 'unknown error'}` });
+      }
+    } finally {
+      this.forgettingId.set(null);
     }
   }
 }

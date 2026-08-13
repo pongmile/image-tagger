@@ -34,8 +34,9 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
       <div class="head">
         <div class="fn">{{ file()?.filename }}</div>
         <div class="meta">{{ file()?.image_kind }} · {{ dims() }} · {{ size() }}
-          <button class="reidx" (click)="reindex()" [disabled]="isReindexing()" title="re-run tagging / caption / OCR for this file" data-testid="reindex-file">{{ isReindexing() ? 're-indexing…' : '↻ re-index' }}</button>
-          <button class="reidx" (click)="recaption()" [disabled]="isRecaptioning()" title="regenerate just the description — after changing tags or the caption model" data-testid="recaption-file">{{ isRecaptioning() ? 're-describing…' : '↻ re-Description' }}</button>
+          <button class="reidx" (click)="reindex()" [disabled]="isReindexing()" title="re-run tagging / caption / OCR for this file, right now — ignores Pause Tagger, affects only this file" data-testid="reindex-file">{{ isReindexing() ? 're-indexing…' : '↻ re-index' }}</button>
+          <button class="reidx" (click)="recaption()" [disabled]="isRecaptioning()" title="regenerate just the description, right now — ignores Pause Tagger, affects only this file" data-testid="recaption-file">{{ isRecaptioning() ? 're-describing…' : '↻ re-Description' }}</button>
+          <button class="reidx" (click)="retag()" [disabled]="isRetagging()" title="regenerate just the WD14 tags, right now — ignores Pause Tagger, affects only this file, bypasses the per-model cache" data-testid="retag-file">{{ isRetagging() ? 're-tagging…' : '↻ re-Tag' }}</button>
         </div>
       </div>
       @if (thumb()) {
@@ -47,6 +48,7 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 
       @if (lightboxOpen()) {
         <app-zoomable-lightbox [src]="lightboxSrc()" [alt]="file()?.filename || ''"
+                                [naturalSize]="lightboxNaturalSize()"
                                 [canPrev]="hasPrev()" [canNext]="hasNext()"
                                 (closed)="closeLightbox()" (prev)="goToAdjacent(-1)" (next)="goToAdjacent(1)" />
       }
@@ -304,8 +306,10 @@ export class PreviewComponent {
   // next while a previous file's request is still in flight.
   readonly reindexingId = signal<number | null>(null);
   readonly recaptioningId = signal<number | null>(null);
+  readonly retaggingId = signal<number | null>(null);
   readonly isReindexing = computed(() => this.reindexingId() === this.lib.selectedId());
   readonly isRecaptioning = computed(() => this.recaptioningId() === this.lib.selectedId());
+  readonly isRetagging = computed(() => this.retaggingId() === this.lib.selectedId());
   readonly editing = signal<string | null>(null);
   readonly thumb = this.lib.thumbUri;
   readonly lightboxOpen = signal(false);
@@ -429,8 +433,29 @@ export class PreviewComponent {
     this.lightboxSrc.set(this.thumb()); // show the cached thumb immediately…
     const id = this.lib.selectedId();
     if (id == null) return;
-    const full = await this.lib.fullImage(id);           // …then swap in full-res.
-    if (this.lightboxOpen() && this.lib.selectedId() === id && full) this.lightboxSrc.set(full);
+    await this.showFile(id, this.thumb() == null);       // …then swap in full-res.
+  }
+
+  /** Stage one file into the open lightbox: cached thumb first (so something is
+   *  on screen straight away), full resolution once it resolves.
+   *
+   *  Both requests start together because they are independent — the full-image
+   *  "load" is only a DB lookup returning an `image-tagger://` URL, and the
+   *  thumb is a small cached WebP. What actually costs time is the <img>
+   *  decoding the original afterwards, which for this library routinely means a
+   *  10000x13000+ photo, so the thumb has to be in place before that starts. */
+  private async showFile(id: number, needThumb: boolean) {
+    const thumbPromise = needThumb ? this.lib.thumb(id) : Promise.resolve(null);
+    const fullPromise = this.lib.fullImage(id);
+    const stillCurrent = () => this.lightboxOpen() && this.lib.selectedId() === id;
+    const thumb = await thumbPromise;
+    // Only ever *replace* what is showing. A file whose thumbnail has not been
+    // generated yet used to blank the viewer to "Loading full image…" for the
+    // whole decode; keeping the previous frame until the new one is ready is
+    // both faster to look at and what every other image viewer does.
+    if (thumb && stillCurrent()) this.lightboxSrc.set(thumb);
+    const full = await fullPromise;
+    if (full && stillCurrent()) this.lightboxSrc.set(full);
   }
 
   closeLightbox() {
@@ -466,9 +491,10 @@ export class PreviewComponent {
       this.suppressLightboxClose = false;
     }
     if (!this.lightboxOpen()) return; // closed while the selection was loading
-    this.lightboxSrc.set(this.thumb());
-    const full = await this.lib.fullImage(nextId);
-    if (this.lightboxOpen() && this.lib.selectedId() === nextId && full) this.lightboxSrc.set(full);
+    // Ask for the thumb by id rather than reading thumbUri: loadSelection()
+    // clears that signal and refills it without awaiting, so by the time
+    // select() resolves it is still null and the lightbox would blank.
+    await this.showFile(nextId, true);
   }
 
   isEditing(t: TagRow) { return this.editing() === t.category + ' ' + t.name; }
@@ -490,6 +516,13 @@ export class PreviewComponent {
 
   readonly file = computed(() =>
     this.lib.results().find((f) => f.id === this.lib.selectedId()) ?? null);
+
+  // Indexed dimensions of the original, so the lightbox can lay out a thumbnail
+  // stand-in at the size the full-resolution image will take (§8.2).
+  readonly lightboxNaturalSize = computed(() => {
+    const f = this.file();
+    return f?.width && f?.height ? { width: f.width, height: f.height } : null;
+  });
 
   readonly grouped = computed(() => {
     const by: Record<string, TagRow[]> = {};
@@ -559,8 +592,7 @@ export class PreviewComponent {
       if (this.lib.selectedId() !== id) return;
       if (r.removed) this.learnMsg.set('The file no longer exists and was removed from the library.');
       else if (!r.ok) this.learnMsg.set(`Re-index failed: ${r.error ?? 'unknown error'}`);
-      else if (r.completed) this.learnMsg.set('Re-index complete. Tags, caption and OCR are refreshed.');
-      else this.learnMsg.set('Re-index queued. Resume indexing to process it.');
+      else this.learnMsg.set('Re-index complete. Tags, caption and OCR are refreshed.');
     } catch (e) {
       if (this.lib.selectedId() === id) this.learnMsg.set(`Re-index failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -577,12 +609,28 @@ export class PreviewComponent {
       const r = await this.lib.recaptionSelected();
       if (this.lib.selectedId() !== id) return;
       if (!r.ok) this.learnMsg.set(`Couldn't regenerate the description: ${r.error ?? 'unknown error'}`);
-      else if (r.completed) this.learnMsg.set('Description regenerated.');
-      else this.learnMsg.set('Description queued. Resume indexing to process it.');
+      else this.learnMsg.set('Description regenerated.');
     } catch (e) {
       if (this.lib.selectedId() === id) this.learnMsg.set(`Couldn't regenerate the description: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       if (this.recaptioningId() === id) this.recaptioningId.set(null);
+    }
+  }
+
+  async retag() {
+    const id = this.lib.selectedId();
+    if (id == null || this.retaggingId() != null) return;
+    this.retaggingId.set(id);
+    this.learnMsg.set('Regenerating tags...');
+    try {
+      const r = await this.lib.retagSelected();
+      if (this.lib.selectedId() !== id) return;
+      if (!r.ok) this.learnMsg.set(`Couldn't regenerate tags: ${r.error ?? 'unknown error'}`);
+      else this.learnMsg.set('Tags regenerated.');
+    } catch (e) {
+      if (this.lib.selectedId() === id) this.learnMsg.set(`Couldn't regenerate tags: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (this.retaggingId() === id) this.retaggingId.set(null);
     }
   }
 

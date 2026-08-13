@@ -260,10 +260,31 @@ def apply(con, tag_id: int) -> int:
                        WHERE file_tags.source='learned'""",
                     (fid, tag_id, float(s)),
                 )
-            if cur.rowcount:
-                db.refresh_fts(con, fid)
+                changed = bool(cur.rowcount)
+                if changed:
+                    # Same transaction as the write: refresh_fts() issues its
+                    # delete+insert without committing, so the last candidate's
+                    # refresh would otherwise never be persisted.
+                    db.refresh_fts(con, fid)
+            if changed:
                 applied += 1
     return applied
+
+
+def apply_all(con) -> dict:
+    """Re-score every trained learned tag against the whole library.
+
+    Pure vector math against embeddings that already exist (no GPU/model
+    inference) — cheap enough to run on a throttle even while the main
+    indexer is paused, so Learned tags keeps catching up on any file that
+    already has an embedding/face instead of waiting for Resume Tagger.
+    Untrained tags (no prototype/classifier yet) are skipped, same as a
+    manual Train click would skip them. Returns {tag_id: applied_count}.
+    """
+    tag_ids = [r["tag_id"] for r in con.execute(
+        "SELECT tag_id FROM learned_tags WHERE prototype IS NOT NULL OR classifier IS NOT NULL"
+    ).fetchall()]
+    return {tag_id: apply(con, tag_id) for tag_id in tag_ids}
 
 
 def apply_to_file(con, file_id: int, space: str = "clip") -> int:
@@ -335,6 +356,58 @@ def build(con, category: str, name: str, space: str = "clip") -> dict | None:
     summary["applied"] = apply(con, tag_id)
     summary["tag_id"] = tag_id
     return summary
+
+
+def forget(con, tag_id: int) -> dict:
+    """Undo everything the few-shot loop did for one tag, keeping the tag (§5.3).
+
+    A learned tag that has gone wrong -- a centroid that drifted onto the wrong
+    cluster, feedback that taught it the opposite of what was meant -- has no
+    way back short of this: retraining only ever *adds* to the same examples,
+    and `apply()` rewrites the same bad rows. So remove exactly what the loop
+    created and nothing else:
+
+      * every ``source='learned'`` row (the "applied to N files" count),
+      * the trained prototype/head, so nothing auto-applies again and
+        ``apply_to_file()`` stops scoring newly indexed files against it,
+      * the accumulated examples, so the next lesson starts from scratch
+        instead of immediately relearning the same mistake,
+      * the rejections that only existed because this tag was being suggested.
+
+    Manual/path/wd14/clip rows for the same tag are deliberately untouched: the
+    tag falls back to exactly the tagging it would have had if it had never
+    been taught, and the hand tagging that seeded it survives (``build()``
+    re-seeds from it via ``_seed_from_manual`` if the user teaches it again).
+    Rejections recorded against *other* sources survive too -- they are what
+    stops ``write_auto_tags()`` resurrecting a wd14/clip tag on the next
+    reindex, and have nothing to do with the learned layer.
+    """
+    affected = [r["file_id"] for r in con.execute(
+        "SELECT file_id FROM file_tags WHERE tag_id=? AND source='learned'",
+        (tag_id,),
+    ).fetchall()]
+    with con:
+        unapplied = con.execute(
+            "DELETE FROM file_tags WHERE tag_id=? AND source='learned'", (tag_id,)
+        ).rowcount
+        examples = con.execute(
+            "DELETE FROM tag_examples WHERE tag_id=?", (tag_id,)
+        ).rowcount
+        con.execute(
+            "DELETE FROM rejected_tags WHERE tag_id=? AND source='learned'", (tag_id,)
+        )
+        trained = con.execute(
+            "DELETE FROM learned_tags WHERE tag_id=?", (tag_id,)
+        ).rowcount
+    # refresh_fts() only issues the delete+insert; it never commits, so this
+    # must stay inside a transaction. Left outside one, the tags disappear from
+    # file_tags while files_fts keeps matching the tag text, and the tag goes on
+    # being findable by search on every file it was ever applied to.
+    with con:
+        for fid in affected:
+            db.refresh_fts(con, fid)
+    return {"ok": True, "unapplied": unapplied, "examples_cleared": examples,
+            "was_trained": bool(trained)}
 
 
 def confirm(con, tag_id: int, file_id: int, space: str) -> None:

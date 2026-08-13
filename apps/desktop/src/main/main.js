@@ -44,9 +44,10 @@ let packageSmokeImageId = null;
 const allowedIndexerCommands = new Set([
   "rescan", "rescan_root", "add_root", "progress", "pause", "resume",
   "set_mode", "retry_errors", "reindex_all", "reindex_root", "recaption_root",
+  "recaption_all",
   "list_errors", "roots", "remove_root", "toggle_root", "add_exclude_pattern",
   "remove_exclude", "toggle_exclude", "rename_tag", "list_tags", "learn_status",
-  "learn", "learn_confirm", "learn_reject", "reject_tag", "confirm_tag",
+  "learn", "learn_confirm", "learn_reject", "learn_forget", "reject_tag", "confirm_tag",
   "list_learned_tags", "download", "install_dependency", "download_status",
   "facets", "set_facet_enabled", "models_dir", "variants", "model_state",
   "set_variant", "persons", "person_files", "name_person", "merge_persons",
@@ -199,6 +200,12 @@ app.whenReady().then(async () => {
   ipcMain.handle("file:recaption", (_e, filePath) =>
     indexer.call("recaption_file", { path: indexedPath(filePath) })
   );
+  // Regenerate just the WD14 tags — narrower than a full reindex, for the
+  // preview pane's "↻ re-Tag" button. Always runs immediately (bypasses
+  // Pause Tagger and the per-model cache), same as reindex/recaption above.
+  ipcMain.handle("file:retag", (_e, filePath) =>
+    indexer.call("retag_file", { path: indexedPath(filePath) })
+  );
 
   // Settings — e.g. the user-selected models download folder (spec §12).
   ipcMain.handle("settings:get", (_e, key, fallback) =>
@@ -270,6 +277,10 @@ app.whenReady().then(async () => {
   // filesystem walk on a background thread in the daemon, so this event
   // carries the real result once it's done (§7 — see _run_scan_async).
   indexer.on("scan_done", forward("indexer:scanDone"));
+  // Single-file re-index/re-caption/re-tag also return immediately ({started})
+  // and run on a background thread in the daemon — same reason as scan_done:
+  // the daemon's RPC loop is single-threaded and must stay answerable.
+  indexer.on("file_done", forward("indexer:fileDone"));
   ipcMain.handle("indexer:call", (_e, cmd, args) => {
     if (!allowedIndexerCommands.has(cmd)) throw new Error(`Indexer command not allowed: ${cmd}`);
     return indexer.call(cmd, args && typeof args === "object" ? args : {});

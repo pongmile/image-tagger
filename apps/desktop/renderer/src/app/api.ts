@@ -74,6 +74,16 @@ export interface Progress {
   files_total: number;
   files_done: number;
   jobs: Record<string, number>;
+  // Per-stage counts for the split progress bars, all in *files* so they can
+  // be compared with files_total and with each other. Derived from stored
+  // output, not the jobs table (finished jobs are never deleted, so a
+  // job-ratio bar would sit near 100% forever). Absent on older backends.
+  scan_done?: number;
+  caption_done?: number;
+  tag_done?: number;
+  // Which stages are switched on, so a bar that could never fill (captioning
+  // disabled) is hidden rather than shown frozen at 0%.
+  facets?: Record<string, boolean>;
   paused?: boolean;
   mode?: 'auto' | 'manual';
   current?: string;
@@ -162,6 +172,10 @@ export interface IndexerApi {
   reindexAll(): Promise<{ queued: number }>;
   reindexRoot(rootId: number): Promise<{ queued: number; root_id?: number }>;
   recaptionRoot(rootId: number): Promise<{ ok: boolean; queued?: number; root_id?: number; error?: string }>;
+  // Explicit "↻ Regen all captions" (Sources page) — force-redoes every
+  // file's caption with whichever model is active, unlike a plain variant
+  // switch (which now only fills in files with no caption yet).
+  recaptionAll(): Promise<{ ok: boolean; queued?: number; error?: string }>;
   listErrors(rootId?: number, limit?: number): Promise<{ errors: ErrorRow[] }>;
   roots(): Promise<{ roots: Root[]; excludes: ExcludeRule[] }>;
   addExclude(path: string): Promise<unknown>;
@@ -190,6 +204,14 @@ export interface IndexerApi {
     needed?: number; reinforces?: boolean;
   }>;
   listLearnedTags(): Promise<{ tags: LearnedTagRow[]; in_progress: TagProgressRow[]; min_positives: number }>;
+  // Reset one tag's few-shot state (§5.3): drops every auto-applied 'learned'
+  // row, the trained model and the accumulated examples, leaving manual/base
+  // tagging for that tag alone. For a learned tag that has started behaving
+  // wrongly — retraining can only add to the same examples, never undo them.
+  learnForget(category: string, name: string): Promise<{
+    ok: boolean; error?: string;
+    unapplied?: number; examples_cleared?: number; was_trained?: boolean;
+  }>;
   download(model: string, variant?: string): Promise<{ started?: boolean; ok?: boolean; dir?: string; error?: string }>;
   installDependency(facet: string): Promise<{ started?: boolean; model?: string; error?: string }>;
   downloadStatus(): Promise<{ downloads: DownloadProgress[] }>;
@@ -230,12 +252,23 @@ export interface Api {
   thumb(fileId: number): Promise<string | null>;
   fullImage(fileId: number): Promise<string | null>;
   setOcr(fileId: number, text: string): Promise<FileDetail | null>;
+  // Always bypass Pause Tagger (§12) — a deliberate single-file click acts on
+  // just that file, immediately, without touching the job queue or "resuming"
+  // anything else. Like rescan, these return as soon as the work has *started*
+  // (the daemon runs it on its own thread so a multi-second inference can't
+  // block its single-threaded RPC loop); await onFileDone for the outcome.
   reindexFile(filePath: string): Promise<{
-    ok: boolean; queued?: boolean; removed?: boolean; job_id?: number; error?: string
+    ok: boolean; started?: boolean; removed?: boolean; error?: string
   }>;
   recaptionFile(filePath: string): Promise<{
-    ok: boolean; queued?: boolean; job_id?: number; error?: string
+    ok: boolean; started?: boolean; error?: string
   }>;
+  retagFile(filePath: string): Promise<{
+    ok: boolean; started?: boolean; error?: string
+  }>;
+  onFileDone(cb: (e: {
+    ok: boolean; action: 'reindex' | 'recaption' | 'retag'; path: string; error?: string;
+  }) => void): () => void;
   openFile?(filePath: string): Promise<string>;
   revealFile?(filePath: string): Promise<void>;
   copyText?(text: string): Promise<boolean>;
@@ -385,6 +418,13 @@ function mockApi(): Api {
     ok: boolean; root_id?: number | null; error?: string;
     added?: number; changed?: number; removed?: number; unchanged?: number; revived?: number;
   }) => void = () => {};
+  let fileDoneCb: (e: {
+    ok: boolean; action: 'reindex' | 'recaption' | 'retag'; path: string; error?: string;
+  }) => void = () => {};
+  // The real daemon runs these on its own thread and emits file_done when the
+  // work finishes; the demo has no work to do, so fire on the next tick.
+  const mockFileDone = (action: 'reindex' | 'recaption' | 'retag', path: string) =>
+    setTimeout(() => fileDoneCb({ ok: true, action, path }), 0);
   const settings = new Map<string, string>([
     ['models_dir', 'D:/ai-models'],
     ['tier', ''],
@@ -512,12 +552,15 @@ function mockApi(): Api {
       const s = byId.get(id); if (s) s.detail.ocr_text = text;
       return s ? { ...s.detail } : null;
     },
-    async reindexFile() { return { ok: true, queued: true }; },
+    async reindexFile(filePath: string) { mockFileDone('reindex', filePath); return { ok: true, started: true }; },
     async recaptionFile(filePath: string) {
       const s = [...byId.values()].find((x) => x.file.path === filePath);
       if (s) s.detail.caption = `(demo) regenerated description for ${s.file.filename}`;
-      return { ok: true, queued: true };
+      mockFileDone('recaption', filePath);
+      return { ok: true, started: true };
     },
+    async retagFile(filePath: string) { mockFileDone('retag', filePath); return { ok: true, started: true }; },
+    onFileDone(cb) { fileDoneCb = cb; return () => { fileDoneCb = () => {}; }; },
     async openFile() { return ''; },
     async revealFile() { return; },
     async getSetting(key, fallback) { return settings.get(key) ?? fallback ?? null; },
@@ -575,7 +618,10 @@ function mockApi(): Api {
       },
       async progress() {
         return { files_total: seed.length, files_done: seed.length,
-          jobs: { done: seed.length }, paused: mockPaused, mode: mockMode };
+          jobs: { done: seed.length },
+          scan_done: seed.length, caption_done: seed.length, tag_done: seed.length,
+          facets: { wd14: true, caption: true },
+          paused: mockPaused, mode: mockMode };
       },
       async pause() { mockPaused = true; return { paused: true }; },
       async resume() { mockPaused = false; return { paused: false }; },
@@ -593,6 +639,7 @@ function mockApi(): Api {
       async recaptionRoot(rootId: number) {
         return { ok: true, queued: Math.max(1, Math.floor(seed.length / mockRoots.length)), root_id: rootId };
       },
+      async recaptionAll() { return { ok: true, queued: seed.length }; },
       async listErrors(rootId?: number) {
         return { errors: mockErrors.filter((e) => rootId == null || e.root_id === rootId)
           .map(({ root_id, ...rest }) => rest) };
@@ -710,6 +757,25 @@ function mockApi(): Api {
       },
       async listLearnedTags() {
         return { tags: mockLearned.map((t) => ({ ...t })), in_progress: mockProgress.map((p) => ({ ...p })), min_positives: 5 };
+      },
+      async learnForget(category: string, name: string) {
+        // Mirrors learned.forget(): the auto-applied 'learned' rows and all
+        // training state go, manual/base tagging for the same tag stays.
+        const trained = mockLearned.findIndex((t) => t.category === category && t.name === name);
+        const inProgress = mockProgress.findIndex((p) => p.category === category && p.name === name);
+        if (trained < 0 && inProgress < 0) return { ok: false, error: 'no such tag' };
+        let unapplied = 0;
+        for (const s of seed) {
+          const before = s.tags.length;
+          s.tags = s.tags.filter(
+            (t) => !(t.category === category && t.name === name && t.source === 'learned'));
+          unapplied += before - s.tags.length;
+        }
+        const examples = (trained >= 0 ? mockLearned[trained].n_pos + mockLearned[trained].n_neg
+          : mockProgress[inProgress].n_pos + mockProgress[inProgress].n_neg);
+        if (trained >= 0) mockLearned.splice(trained, 1);
+        if (inProgress >= 0) mockProgress.splice(inProgress, 1);
+        return { ok: true, unapplied, examples_cleared: examples, was_trained: trained >= 0 };
       },
       async download(model: string, variant?: string) {
         // Simulate streaming: determinate for the onnx tagger, indeterminate for

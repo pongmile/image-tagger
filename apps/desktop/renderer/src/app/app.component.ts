@@ -135,9 +135,9 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
                     title="index only when you press Rescan" data-testid="mode-manual">manual</button>
           </span>
           @if (paused()) {
-            <button class="pauseresume paused" (click)="resume()" title="Indexing is paused — nothing is being processed right now" data-testid="resume">▶ Resume indexing</button>
+            <button class="pauseresume paused" (click)="resume()" title="Tagging is paused — Learned tags and single-file re-index/re-Tag/re-Description still work" data-testid="resume">▶ Resume Tagger</button>
           } @else {
-            <button class="pauseresume running" (click)="pause()" title="Pause background indexing" data-testid="pause">⏸ Pause</button>
+            <button class="pauseresume running" (click)="pause()" title="Pause background tagging to save CPU/GPU — Learned tags keeps running" data-testid="pause">⏸ Pause Tagger</button>
           }
           <button class="ctl" (click)="rescan()" [disabled]="rescanning()" data-testid="rescan-btn">
             {{ rescanning() ? 'rescanning…' : '↻ Rescan' }}
@@ -155,6 +155,16 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
             </div>
           } @else {
             <span class="idle" data-testid="idle">idle · {{ prog()?.files_total || 0 }} files indexed</span>
+          }
+        </div>
+
+        <div class="stagebar" data-testid="stagebar">
+          @for (s of stages(); track s.label) {
+            <span class="stage" [title]="s.title" [attr.data-stage]="s.label">
+              <span class="stagelabel">{{ s.label }}</span>
+              <span class="stagetrack"><span class="stagefill" [style.width.%]="s.pct"></span></span>
+              <span class="stagenum">{{ s.done | number }}/{{ s.total | number }}</span>
+            </span>
           }
         </div>
       </div>
@@ -250,6 +260,7 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
            background: var(--bg-2); border: 1px solid var(--border); font-weight: 500; }
     .ctl.err { background: var(--tag-path); font-weight: 600; }
     .pauseresume { font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 999px; height: 26px;
+                   min-width: 108px; text-align: center;
                    border: 1px solid transparent; cursor: pointer; letter-spacing: .01em; transition: filter .12s, transform .05s; }
     .pauseresume.running { background: var(--accent); color: #fff; }
     .pauseresume.paused { background: #d97706; color: #fff; }
@@ -260,6 +271,23 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
     .progress.paused .fill { opacity: .2; }
     .progress .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .35; transition: width .3s; }
     .progress .pl { position: relative; font-size: 10px; padding: 0 4px; line-height: 16px; color: var(--fg-dim); white-space: nowrap; }
+    /* Per-stage bars (§12). Their own row under the controls: the control row
+       is already full (mode switch, Pause Tagger, Rescan, errors, progress),
+       and squeezing four more label+bar pairs onto it made them wrap into an
+       unreadable jumble. The track uses an explicit border rather than only a
+       background colour so an empty bar is still visibly *there* — on the dark
+       theme a bare var(--bg-2) track disappeared into the header entirely. */
+    .stagebar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+                flex: 0 0 100%; padding: 4px 0 2px; }
+    .stage { display: inline-flex; align-items: center; gap: 6px; }
+    .stagelabel { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+    .stagetrack { position: relative; display: inline-block; width: 88px; height: 8px;
+                  border-radius: 999px; background: var(--bg); overflow: hidden;
+                  border: 1px solid var(--border); }
+    .stagefill { position: absolute; inset: 0 auto 0 0; background: var(--accent);
+                 border-radius: 999px; transition: width .3s; }
+    .stagenum { font-size: 10px; color: var(--fg-dim); white-space: nowrap;
+                font-variant-numeric: tabular-nums; }
 
     .synpanel { padding: 8px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--border); font-size: 11px; }
     .synpanel table { border-collapse: collapse; width: 100%; }
@@ -334,6 +362,29 @@ export class AppComponent {
   readonly pct = computed(() => {
     const p = this.prog();
     return p && p.files_total ? Math.round((p.files_done / p.files_total) * 100) : 0;
+  });
+  // Per-stage progress (§12 observability). Every stage is measured in files
+  // out of the same files_total, so the four bars are directly comparable —
+  // the old single bar mixed file counts and job counts, which is what made
+  // "7,503" and "13,565" look contradictory. Stages the backend didn't report
+  // (older daemon) or that are switched off are dropped rather than drawn
+  // frozen at 0%.
+  readonly stages = computed(() => {
+    const p = this.prog();
+    if (!p || !p.files_total) return [];
+    const total = p.files_total;
+    const rows: { label: string; title: string; done: number; total: number; pct: number }[] = [];
+    const add = (label: string, title: string, done: number | undefined) => {
+      if (done == null) return;
+      rows.push({ label, title, done, total, pct: Math.round((done / total) * 100) });
+    };
+    // No 'Index' row: the bar in the control row above already *is* index
+    // progress ("indexing 59/1412"), and repeating the identical numbers
+    // directly beneath it reads as a rendering bug rather than as detail.
+    add('Scan', 'files read from disk (hash, dimensions, thumbnail)', p.scan_done);
+    if (p.facets?.['wd14'] !== false) add('Tags', 'WD14 general/character tagging', p.tag_done);
+    if (p.facets?.['caption'] !== false) add('Caption', 'natural-language description', p.caption_done);
+    return rows;
   });
   // §12 visibility: what the background process is doing and how much RAM it
   // holds, so a large number in Task Manager has a visible cause in-app

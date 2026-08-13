@@ -21,6 +21,14 @@ class ImageDecodeError(OSError):
     """An input exists but cannot currently be decoded as an image."""
 
 
+# No real still image in this app's own library exceeds a few hundred MB even
+# at extreme resolution (the largest confirmed real photos are ~13500x19000,
+# ~30MB on disk once compressed) -- generous enough to never reject a
+# legitimate image, while decisively excluding video, which is the entire
+# population this limit exists to catch.
+_CV2_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
+
+
 def open_oriented(path: str) -> Image.Image:
     """Open an image and bake in its EXIF orientation, so callers always get
     pixels the way a viewer would show them.
@@ -56,23 +64,36 @@ def open_oriented(path: str) -> Image.Image:
         pillow_error = exc
 
     # rapidocr normally supplies cv2; keep it optional for lightweight tests.
-    try:
-        import cv2
-        import numpy as np
+    # Skipped above this size: np.fromfile() below reads the *entire* file into
+    # memory before cv2 even looks at it, and Pillow already rejected it as an
+    # unrecognised format. For an ordinary photo that is a wasted copy; for a
+    # library that also indexes video (§12 scope: video rows get a thumbnail
+    # frame + filename search, no facets -- they are expected to land here and
+    # be turned away) it means quietly reading multi-gigabyte, sometimes
+    # 20GB+, .mp4/.mov files start to finish on every reindex, stalling the
+    # single worker thread for minutes per file for a decode that was always
+    # going to fail. cv2.imdecode() cannot demux video regardless of how much
+    # of the file is handed to it, so skipping the read changes no outcome --
+    # every file this threshold turns away would have hit the
+    # ImageDecodeError below anyway, just after an expensive detour.
+    if size <= _CV2_FALLBACK_MAX_BYTES:
+        try:
+            import cv2
+            import numpy as np
 
-        encoded = np.fromfile(source, dtype=np.uint8)
-        decoded = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
-        if decoded is not None:
-            if decoded.ndim == 2:
-                decoded = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGB)
-            elif decoded.shape[2] == 4:
-                decoded = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
-                return Image.fromarray(decoded, mode="RGBA")
-            else:
-                decoded = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(decoded, mode="RGB")
-    except Exception:
-        pass
+            encoded = np.fromfile(source, dtype=np.uint8)
+            decoded = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+            if decoded is not None:
+                if decoded.ndim == 2:
+                    decoded = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGB)
+                elif decoded.shape[2] == 4:
+                    decoded = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
+                    return Image.fromarray(decoded, mode="RGBA")
+                else:
+                    decoded = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(decoded, mode="RGB")
+        except Exception:
+            pass
 
     raise ImageDecodeError(
         f"Unsupported or corrupt image data ({size:,} bytes). Restore or "

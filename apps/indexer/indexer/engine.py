@@ -76,9 +76,34 @@ def _probe_python(code: str, timeout: float = 8.0) -> str | None:
         return None
 
 
+_HARDWARE_CACHE: dict | None = None
+
+
 def detect_hardware() -> dict:
     """Best-effort probe of GPU/VRAM + available onnxruntime providers. Never
-    raises — missing torch/onnxruntime just yields the CPU answer."""
+    raises — missing torch/onnxruntime just yields the CPU answer.
+
+    Cached for the daemon's lifetime after the first call. This used to run
+    fresh on every call, and get_engine_config() -- which calls it -- runs on
+    every single indexing job (worker.py, once per file: the combined
+    infer() job and each narrow _run_caption/_run_clip job separately). Each
+    call spawns two throwaway subprocesses to keep torch/onnxruntime out of
+    this long-lived process (see _probe_python's docstring); measured directly
+    against the packaged interpreter, the torch/CUDA one alone costs ~3.2s,
+    almost entirely torch's own cold-import time, repeated per job for
+    hardware that cannot change mid-session -- indexing was spending more
+    wall-clock time re-discovering the GPU than any model spent using it,
+    which is why Task Manager showed near-idle CPU/GPU/disk even while the
+    queue was draining: the "work" was mostly Python interpreter start-up.
+    Safe to cache indefinitely: a facet engine that has already imported
+    torch/onnxruntime in *this* process (wd14.py/caption.py/clip.py's own
+    engine caches) cannot pick up a different build without a process
+    restart anyway, so nothing here can go stale mid-session that wasn't
+    already effectively fixed for the session the moment it first loaded.
+    """
+    global _HARDWARE_CACHE
+    if _HARDWARE_CACHE is not None:
+        return _HARDWARE_CACHE
     has_gpu, vram_gb, gpu_name = False, 0.0, None
     torch_cuda = False
     torch_probe = _probe_python(
@@ -143,7 +168,7 @@ def detect_hardware() -> dict:
     # Hardware presence and torch readiness are intentionally distinct. A GPU
     # can be detected while the current torch wheel is still CPU-only.
     torch_device = "cuda" if torch_cuda else "cpu"
-    return {
+    _HARDWARE_CACHE = {
         "has_gpu": has_gpu,
         "vram_gb": vram_gb,
         "gpu_name": gpu_name,
@@ -151,6 +176,7 @@ def detect_hardware() -> dict:
         "onnx_providers": onnx_providers,
         "torch_device": torch_device,
     }
+    return _HARDWARE_CACHE
 
 
 def resolve_onnx_providers(available: list[str] | None = None,

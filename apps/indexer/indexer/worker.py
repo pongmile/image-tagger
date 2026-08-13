@@ -72,6 +72,8 @@ def run_job(con, job) -> None:
             _run_clip(con, fid)
         elif kind == "caption":
             _run_caption(con, fid)
+        elif kind == "tag":
+            _run_tag(con, fid)
         db.set_job_state(con, job["id"], "done")
     except Exception as e:  # never let one file kill the queue (§5.2 downgrade ethos)
         con.execute(
@@ -81,14 +83,19 @@ def run_job(con, job) -> None:
         db.set_job_state(con, job["id"], "error", repr(e))
 
 
-def _run_infer(con, fid: int) -> None:
+def _run_infer(con, fid: int, *, force: bool = False) -> None:
     with INFERENCE_LOCK:
-        _run_infer_locked(con, fid)
+        _run_infer_locked(con, fid, force=force)
 
 
-def _run_infer_locked(con, fid: int) -> None:
+def _run_infer_locked(con, fid: int, *, force: bool = False) -> None:
     """Inference stage. M3: OCR text-in-image -> ocr_regions + files.ocr_text + FTS.
-    A file with no image on disk (or undecodable) simply yields no regions."""
+    A file with no image on disk (or undecodable) simply yields no regions.
+
+    `force=True` (single-file "↻ re-index") always re-runs every facet from
+    scratch. `force=False` (fresh files, bulk reindex/reindex-all) lets WD14
+    and faces skip work already known to be current -- see _run_wd14_facet
+    and _run_faces_facet."""
     row = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
     if row is None or not os.path.exists(row["path"]):
         return
@@ -120,17 +127,7 @@ def _run_infer_locked(con, fid: int) -> None:
     # before facets that dispatch on kind (CLIP/InsightFace land in later stages).
     if config.facet_enabled(con, "wd14"):
         heartbeat.beat()
-        status.set(f"tagging (wd14) · {os.path.basename(path)}")
-        from .models import wd14
-        tagger = wd14.get_engine(
-            _engine.active_model_dir(con, "wd14"),
-            general_threshold=config.WD14_GENERAL_THRESHOLD,
-            character_threshold=config.WD14_CHARACTER_THRESHOLD,
-            providers=providers,
-        )
-        tags = tagger.tag(path)
-        db.write_auto_tags(con, fid, "wd14", tags)
-        db.set_image_kind(con, fid, tagger.image_kind(tags))
+        _run_wd14_facet(con, fid, path, _engine, providers, force=force)
 
     # CLIP zero-shot scene/clothing/type + embedding store (§5/§8). Open-vocab
     # via the editable clip_labels table; the embedding also feeds semantic search
@@ -149,7 +146,7 @@ def _run_infer_locked(con, fid: int) -> None:
         if kind != "anime":
             heartbeat.beat()
             status.set(f"faces · {os.path.basename(path)}")
-            _run_faces_facet(con, fid, path, _engine, providers)
+            _run_faces_facet(con, fid, path, _engine, providers, force=force)
 
     # OCR text-in-image (kind-agnostic — memes/screenshots aren't kind-specific).
     if config.facet_enabled(con, "ocr"):
@@ -167,15 +164,73 @@ def _run_infer_locked(con, fid: int) -> None:
         _run_caption_facet(con, fid, path, _engine, device)
 
 
-def _run_faces_facet(con, fid: int, path: str, engine_config, providers) -> None:
+def _run_wd14_facet(con, fid: int, path: str, engine_config, providers,
+                     *, force: bool = False) -> None:
+    """WD14 general/character/rating tagging for one file.
+
+    Skips actual inference (no model load, no GPU/CPU work) when this file was
+    already tagged by the *currently active* WD14 variant before — restoring
+    that prior result from facet_model_cache instead. Switching the variant in
+    Settings and switching back therefore restores each model's own tags
+    instantly rather than re-tagging from scratch, and file_tags always
+    mirrors only the active model (search never sees an inactive model's
+    cached tags). `force=True` (single-file "↻ re-Tag"/"↻ re-index") always
+    bypasses the cache and re-runs inference, then refreshes the cache entry.
+    """
+    from .models import wd14
+    # Thresholds are part of the identity of a result, not just the model:
+    # the same variant at a lower general/character threshold emits strictly
+    # more tags, so a cache keyed on the variant alone would keep serving the
+    # old, sparser set after a threshold change.
+    variant_id = (engine_config.selected_variant(con, "wd14") or {}).get("id", "default")
+    model_key = (f"{variant_id}@g{config.WD14_GENERAL_THRESHOLD:g}"
+                 f"c{config.WD14_CHARACTER_THRESHOLD:g}")
+    if not force:
+        cached = db.get_facet_cache(con, fid, "wd14", model_key)
+        if cached is not None:
+            tags = [wd14.TagResult(t["category"], t["name"], t["confidence"])
+                    for t in cached["tags"]]
+            db.write_auto_tags(con, fid, "wd14", tags)
+            if cached.get("image_kind"):
+                db.set_image_kind(con, fid, cached["image_kind"])
+            return
+    status.set(f"tagging (wd14) · {os.path.basename(path)}")
+    tagger = wd14.get_engine(
+        engine_config.active_model_dir(con, "wd14"),
+        general_threshold=config.WD14_GENERAL_THRESHOLD,
+        character_threshold=config.WD14_CHARACTER_THRESHOLD,
+        providers=providers,
+    )
+    tags = tagger.tag(path)
+    kind = tagger.image_kind(tags)
+    db.write_auto_tags(con, fid, "wd14", tags)
+    db.set_image_kind(con, fid, kind)
+    db.set_facet_cache(con, fid, "wd14", model_key, kind, tags)
+
+
+def _run_faces_facet(con, fid: int, path: str, engine_config, providers,
+                      *, force: bool = False) -> None:
     """Real-face detection for one file. Mirrors _run_caption_facet's
     "missing model must never abort the file" handling (§5): a facet the user
     hasn't downloaded InsightFace for yet is the expected, common state, not
     an error — only a genuine load failure *despite* the dependency/model
-    both being present is worth a visible (but still non-fatal — there's no
-    per-file "re-faces" button, only the whole "↻ re-index") log line."""
+    both being present is worth a visible (but still non-fatal) log line.
+
+    A file that already has detected faces is skipped (no re-detect, no
+    GPU/CPU work) unless `force=True` (single-file "↻ re-index") — faces
+    already found for a file don't need finding again."""
     from .models import faces
     from . import learned
+    if not force and con.execute(
+        "SELECT 1 FROM faces WHERE file_id=? LIMIT 1", (fid,)
+    ).fetchone() is not None:
+        # Detection is the expensive part and its result cannot change for an
+        # unchanged file -- but learned 'face'-space tags *can* have been
+        # trained since, so still score this file against them (pure vector
+        # math on the embeddings already stored). Skipping this too would
+        # leave a reindex silently failing to pick up a newly taught person.
+        learned.apply_to_file(con, fid, "face")
+        return
     fv = engine_config.selected_variant(con, "insightface") or {}
     fe = faces.get_engine(str(engine_config.active_model_dir(con, "insightface")),
                           providers=providers, pack=fv.get("pack", "buffalo_l"))
@@ -194,6 +249,23 @@ def _run_faces_facet(con, fid: int, path: str, engine_config, providers) -> None
     # learned tag would only catch up on the next manual "Refresh" instead of
     # as the library indexes.
     learned.apply_to_file(con, fid, "face")
+
+
+def _run_tag(con, fid: int) -> None:
+    """WD14-only regenerate, e.g. "↻ re-Tag" in the preview pane. Mirrors
+    _run_caption/_run_clip: does not rerun OCR/faces/clip/caption, just WD14 —
+    and always forces fresh inference (that's the point of a manual re-Tag
+    click), bypassing the per-model cache that the normal indexing path uses."""
+    with INFERENCE_LOCK:
+        row = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
+        if row is None or not os.path.exists(row["path"]):
+            return
+        if not _image_is_readable(row["path"]):
+            return
+        from . import engine as engine_config
+        cfg = engine_config.get_engine_config(con)
+        _run_wd14_facet(con, fid, row["path"], engine_config, cfg["onnx_providers"],
+                         force=True)
 
 
 def _run_caption(con, fid: int) -> None:

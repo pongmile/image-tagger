@@ -1,5 +1,6 @@
-import { Component, HostListener, signal } from '@angular/core';
+import { Component, HostListener, inject, signal } from '@angular/core';
 import { Person, getApi } from './api';
+import { LibraryService } from './library.service';
 import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 
 /** Faces / persons naming screen (spec §5/§15): review clusters, name one once
@@ -91,17 +92,19 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
             gap: 12px; margin-top: 14px; }
     .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px;
-            display: flex; flex-direction: column; gap: 8px; background: var(--bg-2); }
+            display: flex; flex-direction: column; gap: 8px; background: var(--bg-2);
+            overflow: hidden; min-width: 0; }
     .card.sel { border-color: var(--accent); }
     .avatar { text-align: center; cursor: pointer; background: var(--bg);
               border-radius: 8px; overflow: hidden; aspect-ratio: 1; display: flex;
               align-items: center; justify-content: center; }
     .avatar .placeholder { font-size: 40px; }
     .avatar img { width: 100%; height: 100%; object-fit: cover; }
-    .name { font-weight: 600; text-align: center; }
+    .name { font-weight: 600; text-align: center; width: 100%; box-sizing: border-box; min-width: 0; }
     .meta { color: var(--fg-dim); font-size: 12px; text-align: center; }
-    .actions { display: flex; gap: 6px; }
-    .actions button, .actions select { flex: 1; font-size: 12px; }
+    .actions { display: flex; gap: 6px; min-width: 0; }
+    .actions button, .actions select { flex: 1; font-size: 12px; min-width: 0;
+                                        text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
     /* A person's files used to render as a plain block appended after the
        whole grid -- invisible without scrolling past however many of the
        (potentially 600+) cards came after the one just clicked, which read
@@ -140,25 +143,32 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 })
 export class FacesComponent {
   private api = getApi();
-  readonly persons = signal<Person[]>([]);
+  private lib = inject(LibraryService);
+  // Seeded from the cross-navigation cache so a page revisit shows the last-
+  // known clusters immediately (see library.service.ts's personsCache) —
+  // refresh() below still always runs to pick up anything new, silently.
+  readonly persons = signal<Person[]>(this.lib.personsCache() ?? []);
   readonly selected = signal<number | null>(null);
   readonly files = signal<{ id: number; path: string; filename: string }[]>([]);
   // A real thumbnail of the cluster's representative file, keyed by person id
   // — the actual "face" a user recognizes, in place of a generic icon.
-  readonly avatars = signal<Map<number, string>>(new Map());
+  readonly avatars = signal<Map<number, string>>(new Map(this.lib.personAvatarsCache()));
   readonly lightboxOpen = signal(false);
   readonly lightboxSrc = signal<string | null>(null);
-  readonly loading = signal(true);
+  // Only the very first load (nothing cached yet) shows the loading stripe —
+  // a revisit with cached data refreshes silently in the background instead.
+  readonly loading = signal(this.lib.personsCache() === null);
   readonly loadError = signal('');
 
   constructor() { void this.refresh(); }
 
   async refresh() {
     this.loadError.set('');
-    if (this.persons().length === 0) this.loading.set(true);
+    if (this.lib.personsCache() === null) this.loading.set(true);
     try {
       const persons = await this.api.indexer.persons();
       this.persons.set(persons);
+      this.lib.personsCache.set(persons);
       if (this.selected() != null && !this.persons().some((p) => p.id === this.selected()))
         this.selected.set(null);
       this.loading.set(false);
@@ -184,7 +194,10 @@ export class FacesComponent {
         const p = pending[idx++];
         try {
           const url = await this.api.thumb(p.sample_id!);
-          if (url) this.avatars.update((m) => new Map(m).set(p.id, url));
+          if (url) {
+            this.avatars.update((m) => new Map(m).set(p.id, url));
+            this.lib.personAvatarsCache.update((m) => new Map(m).set(p.id, url));
+          }
         } catch { /* one bad thumbnail shouldn't stop the rest */ }
       }
     };
