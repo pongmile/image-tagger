@@ -35,7 +35,7 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
     .backdrop { position: absolute; inset: 0; overflow: hidden; background: rgba(3, 7, 18, .94);
                 backdrop-filter: blur(8px); display: grid; place-items: center; }
     .viewport { position: absolute; inset: 62px 24px 46px; display: grid; place-items: center;
-                overflow: hidden; touch-action: none; cursor: default; }
+                place-content: center; overflow: hidden; touch-action: none; cursor: default; }
     .viewport.zoomed { cursor: grab; }
     .viewport.dragging { cursor: grabbing; }
     /* The image is laid out at its native intrinsic size (no object-fit/
@@ -45,7 +45,18 @@ import { Component, EventEmitter, HostListener, Input, OnChanges, Output, Simple
        (zoom * baseScale), computed in JS once natural size is known. Fitting
        via object-fit plus a separate transform scale() zoom on top of it
        (the previous approach) meant zooming magnified an already
-       down-rasterized layer, visibly softer than the source at high zoom. */
+       down-rasterized layer, visibly softer than the source at high zoom.
+       A large photo's native size is almost always bigger than .viewport, so
+       its single implicit grid track overflows the container -- place-items:
+       center only centers an item *within* its own track/area and does
+       nothing once the track itself is larger than the container. Without
+       place-content: center too, the oversized track (and so the
+       unscaled image) pins to the top-left, and transform-origin's center
+       point ends up far outside the visible viewport -- only a corner of
+       the shrunk image peeks in near the bottom-right, the bug reported
+       here. place-content: center centers the overflowing track itself so
+       its excess is clipped equally on every side, keeping the
+       transform-origin center aligned with the viewport's actual center. */
     img { display: block; user-select: none; pointer-events: auto;
           transform-origin: center center; will-change: transform;
           border-radius: 8px; box-shadow: 0 24px 80px #000b; }

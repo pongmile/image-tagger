@@ -707,6 +707,35 @@ def _dependency_install_worker(facet: str) -> None:
         gpu = True
     except Exception:
         gpu = False
+    # Broader hardware coverage (§5.2): an Intel NPU ("AI Boost" on Core Ultra)
+    # gets OpenVINO; any other display adapter (AMD, Intel Arc/integrated, or a
+    # non-CUDA NVIDIA build) falls back to the vendor-agnostic DirectML EP.
+    # Both are read-only PnP/WMI queries -- no runtime import, same reasoning
+    # as the nvidia-smi check above.
+    npu = False
+    directml_gpu = False
+    if not gpu:
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_PnPEntity | "
+                 "Where-Object { $_.Name -match 'NPU|AI Boost' } | "
+                 "Select-Object -First 1 -ExpandProperty Name)"],
+                timeout=8, stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            npu = bool(out)
+        except Exception:
+            npu = False
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_VideoController | "
+                 "Select-Object -First 1 -ExpandProperty Name)"],
+                timeout=8, stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            directml_gpu = bool(out)
+        except Exception:
+            directml_gpu = False
     pip = [sys.executable, "-m", "pip", "install",
            "--break-system-packages", "--disable-pip-version-check",
            "--no-warn-script-location", "--no-input",
@@ -769,7 +798,7 @@ def _dependency_install_worker(facet: str) -> None:
         "wd14": [],
         "clip": ([] if installed("open_clip") else ["open_clip_torch==3.3.0"])
                 + ([] if installed("sqlite_vec") else ["sqlite-vec==0.1.9"]),
-        "faces": [] if installed("insightface") else ["insightface==0.7.3"],
+        "faces": [] if installed("insightface") else ["insightface==1.0.1"],
         "caption": (([] if installed("transformers") else ["transformers==5.15.0"])
                     + ([] if installed("accelerate") else ["accelerate==1.14.0"])),
         "joycaption": (([] if installed("transformers") else ["transformers==5.15.0"])
@@ -781,13 +810,25 @@ def _dependency_install_worker(facet: str) -> None:
         commands.append(pip + specs)
 
     if facet in ("ocr", "wd14", "faces") and not installed("onnxruntime"):
+        # rapidocr/insightface may pull the CPU distribution, but all of these
+        # wheels expose the same module files. Installing the target wheel last
+        # with --ignore-installed overwrites those files without invoking pip
+        # uninstall (which can hang inside an embedded runtime).
         if gpu:
-            # rapidocr/insightface may pull the CPU distribution, but both it
-            # and the GPU wheel expose the same module files. Installing the GPU
-            # wheel last with --ignore-installed overwrites those files without
-            # invoking pip uninstall (which can hang inside an embedded runtime).
             commands.append(pip + ["--ignore-installed", "--force-reinstall",
                                     "onnxruntime-gpu[cuda,cudnn]==1.23.2"])
+        elif facet != "ocr" and npu:
+            # RapidOCR's wrapper (models/ocr.py) has no raw onnxruntime
+            # provider passthrough, so only WD14/Faces benefit from OpenVINO's
+            # NPU device (engine.onnx_provider_options). Windows also needs the
+            # standalone `openvino` package alongside the EP wheel.
+            commands.append(pip + ["--ignore-installed", "--force-reinstall",
+                                    "onnxruntime-openvino==1.23.0", "openvino"])
+        elif directml_gpu:
+            # Vendor-agnostic GPU fallback: AMD, Intel Arc/integrated, or any
+            # other DX12 adapter (§5.2 DirectML compatibility fallback).
+            commands.append(pip + ["--ignore-installed", "--force-reinstall",
+                                    "onnxruntime-directml==1.21.0"])
         else:
             commands.append(pip + ["onnxruntime==1.23.2"])
 

@@ -13,8 +13,11 @@ open_clip_torch==3.3.0     # CLIP image/text encoders (pulls torch)
 sqlite-vec==0.1.9          # vec0 embedding store + KNN (soft dep; semantic search optional)
 
 # M6 — InsightFace real faces (§5). Detection + ArcFace embeddings (buffalo_l
-# pack, ~300 MB, downloaded on first use) via onnxruntime.
-insightface==0.7.3
+# pack, ~300 MB, downloaded on first use) via onnxruntime. 1.0.1+ ships a pure
+# Python wheel (py3-none-any) -- 0.7.3 and earlier are sdist-only and fail to
+# build on Windows without Microsoft C++ Build Tools (the legacy `face3d`
+# Cython extension, unused by this app, built unconditionally pre-1.0).
+insightface==1.0.1
 
 # M7 — few-shot learned tags (§5.3). Linear head over frozen CLIP/face embeddings;
 # trains in ms on CPU. Optional — without it, learned tags use a centroid prototype.
@@ -25,13 +28,16 @@ transformers==5.15.0       # (torch installed above for M5)
 accelerate==1.14.0
 bitsandbytes==0.49.2       # JoyCaption 4-bit NF4; Windows x64 wheel available
 
-# Later milestones:
-# onnxruntime-gpu OR onnxruntime-directml   # GPU execution providers (§5.2)
-# onnxruntime-openvino                      # Intel NPU/iGPU execution provider (§5.2).
-#   Mutually exclusive with the onnxruntime/-gpu/-directml wheels above (same
-#   `onnxruntime` import); pick exactly one. Powers WD14 + InsightFace on Intel
-#   Core Ultra "AI Boost" NPUs (engine.resolve_onnx_providers ->
-#   OpenVINOExecutionProvider, device_type="NPU"); RapidOCR's wrapper has no
-#   raw-provider passthrough so OCR stays CPU/CUDA/DirectML only. Verify the
-#   current release supports the pinned onnxruntime/Python version before
-#   installing.
+# Later milestones — automatically selected by daemon._dependency_install_worker
+# (§5.2) per detected hardware; exactly one of the onnxruntime distributions
+# below is installed (they share the `onnxruntime` import and conflict):
+# onnxruntime-gpu[cuda,cudnn]==1.23.2   # NVIDIA GeForce/Quadro (CUDA)
+# onnxruntime-directml==1.21.0          # vendor-agnostic GPU fallback: AMD,
+#   Intel Arc/integrated, or any DX12 adapter (confirmed cp312 win_amd64 wheel)
+# onnxruntime-openvino==1.23.0          # Intel CPU/integrated+discrete GPU/NPU
+#   (Core Ultra "AI Boost"). Windows also needs the standalone `openvino` pip
+#   package installed alongside it (not an automatic dependency of the EP).
+#   Powers WD14 + InsightFace via engine.onnx_provider_options() pinning
+#   device_type="NPU"; RapidOCR's wrapper has no raw-provider passthrough so
+#   OCR stays CPU/CUDA/DirectML only. Reverify versions against current docs
+#   before changing the pins in daemon.py.

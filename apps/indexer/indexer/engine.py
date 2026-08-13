@@ -351,11 +351,22 @@ def facet_readiness(con=None) -> list[dict]:
     dependency importable? model files present? enabled? which model, from where,
     how big, and where it lands on disk."""
     import importlib.util
+    from pathlib import Path
     from . import config, db as _db
     importlib.invalidate_caches()
 
     def has(mod):
-        return importlib.util.find_spec(mod) is not None
+        """A namespace stub is not an installed dependency.
+
+        Interrupted ``pip --target`` runs (daemon._dependency_install_worker)
+        can leave an empty directory behind; a bare find_spec() still reports
+        that as a namespace package, which would make the Models screen show
+        "ready" for a dependency that never actually finished installing.
+        Mirrors daemon.py's own `installed()` guard for the same reason.
+        """
+        spec = importlib.util.find_spec(mod)
+        return bool(spec and spec.origin and spec.origin != "namespace"
+                    and Path(spec.origin).is_file())
 
     wd14_model = None
     clip_present = faces_present = caption_present = False
