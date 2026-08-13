@@ -14,7 +14,7 @@ sqlite-vec==0.1.9          # vec0 embedding store + KNN (soft dep; semantic sear
 
 # M6 — InsightFace real faces (§5). Detection + ArcFace embeddings (buffalo_l
 # pack, ~300 MB, downloaded on first use) via onnxruntime.
-insightface==0.7.3
+insightface==1.0.1
 
 # M7 — few-shot learned tags (§5.3). Linear head over frozen CLIP/face embeddings;
 # trains in ms on CPU. Optional — without it, learned tags use a centroid prototype.
