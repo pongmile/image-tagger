@@ -30,5 +30,10 @@
     "test": "npm run build:renderer && npm run test:python && npm run test:electron",
     "dev:indexer": "python scripts/run_indexer.py"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "allowScripts": {
+    "better-sqlite3": true,
+    "electron": true,
+    "electron-winstaller": true
+  }
 }
