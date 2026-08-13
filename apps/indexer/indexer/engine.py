@@ -44,19 +44,67 @@ def recommend_tier(vram_gb: float, has_gpu: bool) -> str:
     return "high"
 
 
+def _probe_python(code: str, timeout: float = 8.0) -> str | None:
+    """Run `code` in a short-lived Python subprocess and return its stripped
+    stdout, or None on any failure/timeout.
+
+    Hardware probes must never import torch/onnxruntime into *this* process:
+    detect_hardware() runs inside the long-lived indexer daemon (it backs
+    get_engine_config(), called on almost every status/tier read), and once a
+    native runtime is imported there, Windows keeps its DLLs locked for the
+    rest of the daemon's life. A later ``pip install --target`` repair or
+    provider switch (onnxruntime CPU/CUDA/DirectML/OpenVINO, or a torch
+    CPU/CUDA swap — see _dependency_install_worker) then fails trying to
+    replace those files with ``PermissionError: Access is denied``. Probing in
+    a disposable subprocess sidesteps that entirely.
+    """
+    import os
+    import subprocess
+    import sys
+    from . import config
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(config.RUNTIME_PACKAGES_DIR) + (
+        os.pathsep + existing if existing else "")
+    try:
+        out = subprocess.check_output(
+            [sys.executable, "-c", code], text=True, timeout=timeout,
+            stderr=subprocess.DEVNULL, env=env,
+        )
+        return out.strip()
+    except Exception:
+        return None
+
+
 def detect_hardware() -> dict:
     """Best-effort probe of GPU/VRAM + available onnxruntime providers. Never
     raises — missing torch/onnxruntime just yields the CPU answer."""
     has_gpu, vram_gb, gpu_name = False, 0.0, None
-    try:
-        import torch
-        if torch.cuda.is_available():
-            has_gpu = True
-            props = torch.cuda.get_device_properties(0)
-            vram_gb = round(props.total_memory / (1024 ** 3), 1)
-            gpu_name = props.name
-    except Exception:
-        pass
+    torch_cuda = False
+    torch_probe = _probe_python(
+        "import json\n"
+        "info = {'cuda': False, 'vram_gb': 0.0, 'name': None}\n"
+        "try:\n"
+        "    import torch\n"
+        "    if torch.cuda.is_available():\n"
+        "        info['cuda'] = True\n"
+        "        props = torch.cuda.get_device_properties(0)\n"
+        "        info['vram_gb'] = round(props.total_memory / (1024 ** 3), 1)\n"
+        "        info['name'] = props.name\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print(json.dumps(info))\n"
+    )
+    if torch_probe:
+        try:
+            import json
+            info = json.loads(torch_probe)
+            torch_cuda = bool(info.get("cuda"))
+            if torch_cuda:
+                has_gpu, vram_gb = True, float(info.get("vram_gb") or 0.0)
+                gpu_name = info.get("name")
+        except Exception:
+            torch_cuda = False
 
     # A CPU-only torch wheel must not hide an NVIDIA GPU from the Models screen.
     # nvidia-smi ships with the driver and is the most reliable pre-install probe
@@ -77,20 +125,23 @@ def detect_hardware() -> dict:
             pass
 
     onnx_providers = []
-    try:
-        import onnxruntime as ort
-        onnx_providers = list(ort.get_available_providers())
-    except Exception:
-        pass
+    onnx_probe = _probe_python(
+        "import json\n"
+        "try:\n"
+        "    import onnxruntime as ort\n"
+        "    print(json.dumps(list(ort.get_available_providers())))\n"
+        "except Exception:\n"
+        "    print('[]')\n"
+    )
+    if onnx_probe:
+        try:
+            import json
+            onnx_providers = json.loads(onnx_probe)
+        except Exception:
+            onnx_providers = []
 
     # Hardware presence and torch readiness are intentionally distinct. A GPU
     # can be detected while the current torch wheel is still CPU-only.
-    torch_cuda = False
-    try:
-        import torch
-        torch_cuda = bool(torch.cuda.is_available())
-    except Exception:
-        pass
     torch_device = "cuda" if torch_cuda else "cpu"
     return {
         "has_gpu": has_gpu,
@@ -104,17 +155,39 @@ def detect_hardware() -> dict:
 
 def resolve_onnx_providers(available: list[str] | None = None,
                            prefer: str | None = None) -> list[str]:
-    """Ordered onnxruntime provider list, best-first (§5.2 CUDA->DirectML->CPU).
-    `prefer` pins a provider to the front if it's available."""
+    """Ordered onnxruntime provider list, best-first (§5.2 CUDA -> DirectML ->
+    OpenVINO (Intel NPU/iGPU) -> CPU). `prefer` pins a provider to the front if
+    it's available. OpenVINOExecutionProvider only appears in `available` when
+    the optional `onnxruntime-openvino` build is installed (requirements-models
+    §NPU) — plain `onnxruntime`/`onnxruntime-gpu`/`onnxruntime-directml` don't
+    ship it, matching how CUDA/DirectML are already gated on the installed
+    wheel rather than a separate hardware probe."""
     if available is None:
         available = detect_hardware()["onnx_providers"]
-    order = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
+    order = ["CUDAExecutionProvider", "DmlExecutionProvider",
+             "OpenVINOExecutionProvider", "CPUExecutionProvider"]
     if prefer:
         order = [prefer] + [p for p in order if p != prefer]
     picked = [p for p in order if p in available]
     if "CPUExecutionProvider" not in picked:
         picked.append("CPUExecutionProvider")   # always the universal fallback
     return picked
+
+
+def onnx_provider_options(providers: list[str],
+                          npu_device_type: str = "NPU") -> list:
+    """Pair provider names with the options onnxruntime needs to actually use
+    them (§5.2 Intel NPU support). Plain provider-name strings default to
+    whichever device each EP prefers on its own — but OpenVINOExecutionProvider
+    defaults to CPU, not the NPU, so it must be paired with an explicit
+    ``device_type`` to route work to the NPU. If the NPU isn't present,
+    OpenVINO's own device init fails and onnxruntime falls through to the next
+    provider in the list (CPU), same as an unavailable CUDA/DirectML device.
+    Every other provider passes through unchanged; onnxruntime accepts a mixed
+    list of plain names and (name, options) tuples for `providers=`."""
+    return [(p, {"device_type": npu_device_type})
+            if p == "OpenVINOExecutionProvider" else p
+            for p in providers]
 
 
 # The model catalog — the single source of truth for *which* model each facet

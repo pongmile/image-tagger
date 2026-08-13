@@ -144,9 +144,10 @@ class Wd14Engine(TaggerEngine):
 
         self.general_threshold = general_threshold
         self.character_threshold = character_threshold
+        from .. import engine as _engine
         self.session = ort.InferenceSession(
             str(model_path),
-            providers=providers or ["CPUExecutionProvider"],
+            providers=_engine.onnx_provider_options(providers or ["CPUExecutionProvider"]),
         )
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name

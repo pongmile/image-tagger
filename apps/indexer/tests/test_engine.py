@@ -59,6 +59,24 @@ def run() -> int:
     check("CPUExecutionProvider" in engine.resolve_onnx_providers(["DmlExecutionProvider"]),
           "CPU fallback always present")
 
+    # --- Intel NPU via OpenVINO (§5.2): after DirectML, before CPU ---------
+    npu = engine.resolve_onnx_providers(
+        ["OpenVINOExecutionProvider", "CPUExecutionProvider"])
+    check(npu[0] == "OpenVINOExecutionProvider",
+          "OpenVINO (NPU) preferred when no CUDA/DirectML")
+    ranked = engine.resolve_onnx_providers(
+        ["OpenVINOExecutionProvider", "DmlExecutionProvider", "CUDAExecutionProvider"])
+    check(ranked == ["CUDAExecutionProvider", "DmlExecutionProvider",
+                     "OpenVINOExecutionProvider", "CPUExecutionProvider"],
+          "full order is CUDA -> DirectML -> OpenVINO (NPU) -> CPU")
+    check("OpenVINOExecutionProvider" not in engine.resolve_onnx_providers(["CPUExecutionProvider"]),
+          "OpenVINO omitted when its onnxruntime build isn't installed")
+    opts = engine.onnx_provider_options(["CUDAExecutionProvider", "OpenVINOExecutionProvider"])
+    check(opts[0] == "CUDAExecutionProvider",
+          "onnx_provider_options passes ordinary providers through unchanged")
+    check(opts[1] == ("OpenVINOExecutionProvider", {"device_type": "NPU"}),
+          "onnx_provider_options pins OpenVINO to the NPU device")
+
     # --- real detection on THIS machine doesn't crash ----------------------
     cfg = engine.get_engine_config()
     check(cfg["tier"] in engine.PRESETS and cfg["onnx_providers"],

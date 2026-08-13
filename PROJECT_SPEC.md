@@ -119,7 +119,7 @@ The app must run on anything from a CPU-only notebook to an RTX 5090. Provide a 
 
 Two independent knobs:
 
-- **Execution provider** (auto-detected, overridable): `CUDA` (NVIDIA) → `DirectML` (any GPU incl. AMD/Intel) → `CPU` (onnxruntime). DirectML is the compatibility fallback; CPU is the universal fallback.
+- **Execution provider** (auto-detected, overridable): `CUDA` (NVIDIA) → `DirectML` (any GPU incl. AMD/Intel) → `OpenVINO` (Intel NPU, e.g. Core Ultra "AI Boost", via the optional `onnxruntime-openvino` wheel) → `CPU` (onnxruntime). DirectML and OpenVINO are compatibility fallbacks selected only when their onnxruntime build is installed; CPU is the universal fallback. Applies to the onnxruntime-backed facets (WD14, InsightFace); RapidOCR's wrapper has no raw-provider passthrough so OCR stays CPU/CUDA/DirectML only, and CLIP/caption (torch-based) stay CPU/CUDA only — Intel NPU acceleration for torch models is not yet wired.
 - **Model preset** = per-task model variant + precision + batch size, keyed to a VRAM bucket.
 
 | Tier | VRAM bucket | Example GPUs | Tagger (WD14) | CLIP | Caption VLM | Precision / batch |

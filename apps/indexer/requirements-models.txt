@@ -27,3 +27,11 @@ bitsandbytes==0.49.2       # JoyCaption 4-bit NF4; Windows x64 wheel available
 
 # Later milestones:
 # onnxruntime-gpu OR onnxruntime-directml   # GPU execution providers (§5.2)
+# onnxruntime-openvino                      # Intel NPU/iGPU execution provider (§5.2).
+#   Mutually exclusive with the onnxruntime/-gpu/-directml wheels above (same
+#   `onnxruntime` import); pick exactly one. Powers WD14 + InsightFace on Intel
+#   Core Ultra "AI Boost" NPUs (engine.resolve_onnx_providers ->
+#   OpenVINOExecutionProvider, device_type="NPU"); RapidOCR's wrapper has no
+#   raw-provider passthrough so OCR stays CPU/CUDA/DirectML only. Verify the
+#   current release supports the pinned onnxruntime/Python version before
+#   installing.

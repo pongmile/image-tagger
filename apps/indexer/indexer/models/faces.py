@@ -50,11 +50,12 @@ class InsightFaceEngine(FaceEngine):
     def __init__(self, model_dir=None, det_size=640, providers=None,
                  min_det_score=0.5, pack="buffalo_l"):
         from insightface.app import FaceAnalysis
+        from .. import engine as _engine
         self.min_det_score = min_det_score
         self.pack = pack
         self.app = FaceAnalysis(
             name=pack, root=str(model_dir) if model_dir else None,
-            providers=providers or ["CPUExecutionProvider"])
+            providers=_engine.onnx_provider_options(providers or ["CPUExecutionProvider"]))
         self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
 
     def detect(self, path):

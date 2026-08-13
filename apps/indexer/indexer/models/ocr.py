@@ -72,6 +72,12 @@ class RapidOcrEngine(OcrEngine):
         providers = providers or ["CPUExecutionProvider"]
         use_cuda = "CUDAExecutionProvider" in providers
         use_dml = not use_cuda and "DmlExecutionProvider" in providers
+        # RapidOCR's own wrapper only exposes cuda/dml toggles (no raw
+        # onnxruntime `providers=`/provider_options passthrough), so unlike
+        # WD14/InsightFace it can't be routed onto OpenVINOExecutionProvider /
+        # the Intel NPU (§5.2) without vendoring a patched RapidOCR. It still
+        # runs correctly on CPU/CUDA/DirectML tiers either way (§10 tiering).
+        #
         # RapidOCR owns three ONNX sessions (detect/classify/recognize). Its
         # defaults force all three onto CPU and allow each session to consume
         # every core. Follow the same provider choice as WD14 and cap the CPU
