@@ -81,6 +81,11 @@ export interface Progress {
   scan_done?: number;
   caption_done?: number;
   tag_done?: number;
+  // Files still waiting on the queue. Surfaced as "N queued" rather than as a
+  // done/total ratio: index_status tracks freshness relative to the queue, so
+  // one "Reindex all" resets almost every row and files_done collapses to ~0
+  // while the coverage bars above still (correctly) read 6,000+.
+  files_pending?: number;
   // Which stages are switched on, so a bar that could never fill (captioning
   // disabled) is hidden rather than shown frozen at 0%.
   facets?: Record<string, boolean>;
@@ -222,7 +227,12 @@ export interface IndexerApi {
   modelsDir(): Promise<string>;
   variants(): Promise<FacetVariants[]>;
   modelState(): Promise<ModelState>;
-  setVariant(facet: string, variant: string): Promise<{ ok: boolean; reindex_needed?: boolean; recaptioning?: number }>;
+  setVariant(facet: string, variant: string): Promise<{
+    ok: boolean; reindex_needed?: boolean; recaptioning?: number;
+    // Set when the variant applied fine but a runtime only it needs (e.g.
+    // bitsandbytes for a 4-bit model) could not be installed.
+    runtime_error?: string | null;
+  }>;
   persons(): Promise<Person[]>;
   personFiles(id: number): Promise<{ id: number; path: string; filename: string }[]>;
   namePerson(id: number, name: string): Promise<unknown>;

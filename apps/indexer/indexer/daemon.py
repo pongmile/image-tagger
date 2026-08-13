@@ -431,6 +431,29 @@ def handle(con, msg: dict) -> dict:
         return {"id": rid, "ok": False, "error": repr(e)}
 
 
+def _ensure_variant_runtime(con, facet: str, variant: dict) -> str | None:
+    """Install a runtime dependency that only *this* variant needs.
+
+    A variant's weights and its runtime are downloaded by separate paths, so
+    picking e.g. JoyCaption 4-bit when its weights were already fetched (or
+    fetched by an older build that had no such step) leaves bitsandbytes
+    missing. The facet then reports "ready", fails at model-load time, and --
+    because the previous model's caption is still stored on the row -- looks
+    exactly like the app ignoring the model the user just applied. Returns an
+    error string, or None on success/nothing-to-do.
+    """
+    import importlib.util
+    if facet != "caption" or not variant.get("load_in_4bit"):
+        return None
+    if importlib.util.find_spec("bitsandbytes") is not None:
+        return None
+    _dependency_install_worker("joycaption")
+    dep = _download_get("dep:joycaption") or {}
+    if dep.get("state") == "done":
+        return None
+    return dep.get("error") or "4-bit runtime (bitsandbytes) installation failed"
+
+
 def _set_variant(con, facet: str, variant_id: str) -> dict:
     """Persist a model-variant choice (§5.2). If the CLIP variant changes to a
     different embedding dimension, drop file_vec so the library re-indexes into
@@ -454,8 +477,13 @@ def _set_variant(con, facet: str, variant_id: str) -> dict:
     # captions" on the Sources page (db.recaption_all), not an automatic side
     # effect of picking a model in Settings.
     db.set_setting(con, f"{facet}_variant", variant_id)
+    # Apply is the point where the choice becomes real, so it is also where a
+    # variant-only runtime has to exist -- otherwise the facet reports ready,
+    # fails at load time, and the stale previous caption makes it look like
+    # the app ignored the model that was just applied.
+    runtime_error = _ensure_variant_runtime(con, facet, new)
     return {"ok": True, "facet": facet, "id": variant_id, "reindex_needed": reindex,
-            "recaptioning": recaptioned}
+            "recaptioning": recaptioned, "runtime_error": runtime_error}
 
 
 def _set_facet_enabled(con, facet: str, enabled: bool) -> dict:

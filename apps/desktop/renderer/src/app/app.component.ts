@@ -149,9 +149,10 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
             <button class="ctl err" (click)="retry()" data-testid="retry">↺ Retry {{ errorCount() }} error(s)</button>
           }
           @if (indexing()) {
-            <div class="progress" [class.paused]="paused()" data-testid="progress" [title]="jobsLabel()">
+            <div class="progress" [class.paused]="paused()" data-testid="progress"
+                 [title]="'Files still queued for tagging/captioning. The bars below show how much of the library already has each kind of output — a reindex re-queues files that already have tags, so this number can be large while those stay high.\n' + jobsLabel()">
               <div class="fill" [style.width.%]="pct()"></div>
-              <span class="pl">{{ paused() ? 'paused' : 'indexing' }} {{ prog()!.files_done }}/{{ prog()!.files_total }}</span>
+              <span class="pl">{{ paused() ? 'paused' : 'indexing' }} · {{ pending() | number }} queued</span>
             </div>
           } @else {
             <span class="idle" data-testid="idle">idle · {{ prog()?.files_total || 0 }} files indexed</span>
@@ -362,6 +363,14 @@ export class AppComponent {
   readonly pct = computed(() => {
     const p = this.prog();
     return p && p.files_total ? Math.round((p.files_done / p.files_total) * 100) : 0;
+  });
+  // Work still outstanding, shown as a count rather than a done/total ratio —
+  // see Progress.files_pending for why the ratio form was actively misleading
+  // next to the coverage bars.
+  readonly pending = computed(() => {
+    const p = this.prog();
+    if (!p) return 0;
+    return p.files_pending ?? Math.max(0, p.files_total - p.files_done);
   });
   // Per-stage progress (§12 observability). Every stage is measured in files
   // out of the same files_total, so the four bars are directly comparable —

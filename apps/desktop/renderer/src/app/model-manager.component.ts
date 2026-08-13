@@ -371,8 +371,14 @@ export class ModelManagerComponent implements OnDestroy {
       const r = await this.api.indexer.setVariant(facet, id);
       if (!r.ok) throw new Error('Could not apply model selection');
       if (r.reindex_needed) this.reindexNote.set(true);
-      this.notice.set(`Applied ${facet} model: ${this.vlist(facet).find((v) => v.id === id)?.label ?? id}`
-        + (r.recaptioning ? ` — ${r.recaptioning} already-captioned file(s) queued for a new description.` : ''));
+      const label = this.vlist(facet).find((v) => v.id === id)?.label ?? id;
+      // A variant-only runtime that failed to install must be said out loud:
+      // the selection is saved either way, so staying silent here is what
+      // makes it look like the app kept using the previous model.
+      this.notice.set(r.runtime_error
+        ? `Applied ${facet} model: ${label} — but its runtime could not be installed: ${r.runtime_error}. Captions will keep failing until this is resolved.`
+        : `Applied ${facet} model: ${label}`
+          + (r.recaptioning ? ` — ${r.recaptioning} already-captioned file(s) queued for a new description.` : ''));
       this.pending.update((p) => { const n = { ...p }; delete n[facet]; return n; });
       await this.refresh();
     } catch (e) {

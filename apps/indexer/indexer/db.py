@@ -1133,6 +1133,17 @@ def progress(con) -> dict:
     # no job kind of their own at all -- they run as sub-steps inside one
     # 'infer' job -- so output existence is the only thing that can measure
     # them.
+    # Files still waiting on the queue. Reported separately from files_done
+    # because the two answer different questions and were being read as if
+    # they answered the same one: index_status tracks freshness *relative to
+    # the queue*, so one "Reindex all" click resets nearly every row to
+    # pending and files_done collapses to ~0 even though the library still
+    # has tags and captions on 6,000+ files. Shown to the user as "N queued"
+    # rather than as a done/total ratio, so it cannot be mistaken for the
+    # coverage bars below.
+    files_pending = con.execute(
+        "SELECT count(*) c FROM files WHERE index_status<>'done'"
+    ).fetchone()["c"]
     scan_done = con.execute(
         "SELECT count(*) c FROM files WHERE sha256<>''"
     ).fetchone()["c"]
@@ -1152,6 +1163,7 @@ def progress(con) -> dict:
     # unexplained number in Task Manager with no link back to this app.
     from . import status
     return {"files_total": total, "files_done": done, "jobs": by_state,
+            "files_pending": files_pending,
             "scan_done": scan_done, "caption_done": caption_done,
             "tag_done": tag_done, "facets": facets,
             "current": status.get(), "rss_mb": status.rss_mb()}

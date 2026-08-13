@@ -189,6 +189,7 @@ app.whenReady().then(async () => {
       // like db.progress()'s real payload, including the per-stage counts the
       // split Scan/Tags/Caption bars read.
       const progressEvent = (done) => ({ files_total: 1412, files_done: done,
+        files_pending: 1412 - done,
         jobs: { queued: 1412 - done, running: 1, done },
         scan_done: 1412, tag_done: 1200, caption_done: 900,
         facets: { wd14: true, caption: true }, paused: false, mode: 'auto' });
@@ -200,7 +201,11 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 100));
       const live59 = await win.webContents.executeJavaScript(
         `document.querySelector('[data-testid=progress] .pl')?.textContent || ''`);
-      const liveProgress = /58\/1412/.test(live58) && /59\/1412/.test(live59);
+      // Outstanding work is shown as a "N queued" count, not a done/total
+      // ratio: index_status measures freshness against the queue, so one
+      // "Reindex all" collapses files_done to ~0 while the coverage bars
+      // below still read 80%+ — as a ratio the two looked contradictory.
+      const liveProgress = /1,354 queued/.test(live58) && /1,353 queued/.test(live59);
       // Per-stage bars (§12): each stage must render a labelled, non-zero-width
       // track — a bar whose track is invisible or whose fill never moves is the
       // exact failure this split was meant to remove.

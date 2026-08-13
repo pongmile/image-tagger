@@ -45,9 +45,10 @@ import { LibraryService } from './library.service';
           <div class="ovtrack" [class.paused]="ovp.paused">
             <div class="ovfill" [style.width.%]="ovp.files_total ? (ovp.files_done / ovp.files_total * 100) : 0"></div>
           </div>
-          <span class="ovlabel">
+          <span class="ovlabel"
+                title="Files still queued for tagging/captioning. The bars below show how much of the library already has each kind of output — a reindex re-queues files that already have tags, so this can be large while those stay high.">
             {{ ovp.paused ? '⏸ paused' : '● indexing' }}
-            {{ ovp.files_done | number }}/{{ ovp.files_total | number }}
+            · {{ (ovp.files_pending ?? (ovp.files_total - ovp.files_done)) | number }} queued
             @if (!ovp.paused && ovp.current && ovp.current !== 'idle') { <span class="ovcurrent">· {{ ovp.current }}</span> }
           </span>
         </div>

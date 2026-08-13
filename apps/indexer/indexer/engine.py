@@ -410,6 +410,20 @@ def facet_model_ready(con, facet: str) -> tuple[bool, str]:
             return False, "captioning dependency (transformers + accelerate) is not installed"
         if not model_ready_marker(con, "caption").exists():
             return False, "no caption model has been downloaded yet"
+        # Variant-specific runtime requirements. Reporting a bare "ready" for a
+        # variant that cannot actually load is worse than reporting "not
+        # installed": the facet passes this gate, then blows up at load time
+        # with a raw exception, and because the previous model's caption is
+        # still on the row it looks to the user as though the app silently
+        # ignored their model choice and kept using the old one.
+        variant = selected_variant(con, "caption") or {}
+        if variant.get("load_in_4bit") and not _dep_importable("bitsandbytes"):
+            return False, (f"{variant.get('label', variant.get('id'))} needs the "
+                           "bitsandbytes 4-bit runtime, which is not installed")
+        if variant.get("engine") == "joycaption" and \
+                not get_engine_config(con)["torch_device"].startswith("cuda"):
+            return False, (f"{variant.get('label', variant.get('id'))} needs a CUDA GPU "
+                           "— pick a BLIP variant on CPU-only machines")
         return True, ""
     if facet == "faces":
         if not _dep_importable("insightface"):
