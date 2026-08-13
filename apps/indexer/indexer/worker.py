@@ -149,18 +149,7 @@ def _run_infer_locked(con, fid: int) -> None:
         if kind != "anime":
             heartbeat.beat()
             status.set(f"faces · {os.path.basename(path)}")
-            from .models import faces
-            from . import learned
-            fv = _engine.selected_variant(con, "insightface") or {}
-            fe = faces.get_engine(str(_engine.active_model_dir(con, "insightface")),
-                                  providers=providers, pack=fv.get("pack", "buffalo_l"))
-            detected = fe.detect(path)
-            db.write_faces(con, fid, detected, threshold=config.FACE_THRESHOLD)
-            # Score this file against 'face'-space learned tags immediately
-            # (§5.3), the same online-learning treatment CLIP gets above —
-            # otherwise a real-person learned tag would only catch up on the
-            # next manual "Refresh" instead of as the library indexes.
-            learned.apply_to_file(con, fid, "face")
+            _run_faces_facet(con, fid, path, _engine, providers)
 
     # OCR text-in-image (kind-agnostic — memes/screenshots aren't kind-specific).
     if config.facet_enabled(con, "ocr"):
@@ -176,6 +165,35 @@ def _run_infer_locked(con, fid: int) -> None:
     if config.facet_enabled(con, "caption"):
         heartbeat.beat()
         _run_caption_facet(con, fid, path, _engine, device)
+
+
+def _run_faces_facet(con, fid: int, path: str, engine_config, providers) -> None:
+    """Real-face detection for one file. Mirrors _run_caption_facet's
+    "missing model must never abort the file" handling (§5): a facet the user
+    hasn't downloaded InsightFace for yet is the expected, common state, not
+    an error — only a genuine load failure *despite* the dependency/model
+    both being present is worth a visible (but still non-fatal — there's no
+    per-file "re-faces" button, only the whole "↻ re-index") log line."""
+    from .models import faces
+    from . import learned
+    fv = engine_config.selected_variant(con, "insightface") or {}
+    fe = faces.get_engine(str(engine_config.active_model_dir(con, "insightface")),
+                          providers=providers, pack=fv.get("pack", "buffalo_l"))
+    if isinstance(fe, faces.NullFaceEngine):
+        ready, reason = engine_config.facet_model_ready(con, "faces")
+        if ready:
+            print(f"faces engine failed to load for {os.path.basename(path)} "
+                  f"though the model is installed: {faces.last_error()}", file=sys.stderr)
+        else:
+            print(f"skipping faces for {os.path.basename(path)}: {reason}", file=sys.stderr)
+        return
+    detected = fe.detect(path)
+    db.write_faces(con, fid, detected, threshold=config.FACE_THRESHOLD)
+    # Score this file against 'face'-space learned tags immediately (§5.3),
+    # the same online-learning treatment CLIP gets — otherwise a real-person
+    # learned tag would only catch up on the next manual "Refresh" instead of
+    # as the library indexes.
+    learned.apply_to_file(con, fid, "face")
 
 
 def _run_caption(con, fid: int) -> None:
@@ -204,6 +222,15 @@ def _run_caption_facet(con, fid: int, path: str, engine_config, device: str) -> 
         device=device, name=capv.get("engine", "blip"),
         load_in_4bit=capv.get("load_in_4bit", False))
     if isinstance(cap_engine, caption.NullCaptionEngine):
+        ready, reason = engine_config.facet_model_ready(con, "caption")
+        if not ready:
+            # Dependency/model genuinely not installed yet — the expected,
+            # common state before the user downloads it (§11): skip this
+            # file's caption quietly rather than erroring the whole per-file
+            # job. "↻ re-Description" (or the next reindex) picks it up once
+            # the model is installed.
+            print(f"skipping caption for {os.path.basename(path)}: {reason}", file=sys.stderr)
+            return
         # A silent empty caption on load failure (bad model id, missing
         # bitsandbytes, insufficient VRAM for JoyCaption, ...) used to look
         # identical to "nothing to caption" — surface it as a real per-file
