@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Captioning (BLIP/JoyCaption) and Real faces (InsightFace) no longer block or error out the rest of a file's indexing when their model isn't installed yet — they're skipped gracefully (with a log line explaining why) instead of failing the whole file; a genuine engine load failure (as opposed to "not installed") still surfaces as a real error, unchanged
+- "↻ re-Description" now returns a clear message instead of silently doing nothing when the caption model isn't actually installed yet, and works correctly once the model is installed and the facet enabled
+
 ## 0.5.0
 
 - Preview: selecting more than one result now shows a plain thumbnail grid with filenames in the right-hand pane instead of a single file's tags/caption/metadata, which no longer applies to a multi-selection
