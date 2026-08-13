@@ -77,7 +77,7 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
                class="thumbrow" [style.height.px]="rowHeight()">
             @for (f of chunk; track f.id) {
               <div class="thumbcell" [class.sel]="selected(f.id)" [attr.data-file-id]="f.id"
-                   [style.width.px]="thumbSize()"
+                   [style.width.px]="cellWidth()"
                    (click)="click(f, $event)" (dblclick)="open(f)"
                    (contextmenu)="showMenu(f, $event)" data-testid="row">
                 <div class="thumbimg" [style.width.px]="thumbSize()" [style.height.px]="thumbSize()">
@@ -234,15 +234,22 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
   // --- View mode (§8.1): list / small thumbnails / large thumbnails --------
   private static readonly VIEW_KEY = 'imageTagger.resultGrid.viewMode';
   private static readonly THUMB_GAP = 10;
+  // Must match .thumbcell's own CSS padding: the cell's *outer* width has to
+  // include it, or the fixed-size .thumbimg inside (bound to the same
+  // thumbSize) overflows the cell's padded content box on the right/bottom —
+  // pushing the image past the 'selected' highlight border drawn on the cell
+  // itself, instead of the border cleanly framing it.
+  private static readonly THUMB_PADDING = 6;
   private static readonly THUMB_SIZES: Record<'small' | 'large', number> = { small: 120, large: 280 };
 
   readonly viewMode = signal<'list' | 'small' | 'large'>(this.loadViewMode());
   readonly thumbSize = computed(() => ResultGridComponent.THUMB_SIZES[this.viewMode() === 'large' ? 'large' : 'small']);
+  readonly cellWidth = computed(() => this.thumbSize() + ResultGridComponent.THUMB_PADDING * 2);
   // Label + padding above the square thumbnail.
   readonly rowHeight = computed(() => this.thumbSize() + 30);
   private readonly bodyWidth = signal(800);
   readonly itemsPerRow = computed(() => Math.max(1,
-    Math.floor((this.bodyWidth() - 20) / (this.thumbSize() + ResultGridComponent.THUMB_GAP))));
+    Math.floor((this.bodyWidth() - 20) / (this.cellWidth() + ResultGridComponent.THUMB_GAP))));
   readonly rows = computed(() => {
     const n = this.itemsPerRow();
     const results = this.lib.results();
