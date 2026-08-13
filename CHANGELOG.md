@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Preview: selecting more than one result now shows a plain thumbnail grid with filenames in the right-hand pane instead of a single file's tags/caption/metadata, which no longer applies to a multi-selection
+- Lightbox: added previous/next navigation (⟨/⟩ buttons and the ArrowLeft/ArrowRight keys) to browse through the current search results without closing and reopening the image
+
 ## 0.4.0
 
 - Settings: added a "Check for updates" section that compares the running build against this repo's latest GitHub Release and links to it — not a silent auto-updater, so it can't introduce the install/update bugs that come with one
