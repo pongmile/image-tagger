@@ -138,6 +138,12 @@ app.whenReady().then(async () => {
   ipcMain.handle("clipboard:write", () => true);
   ipcMain.handle("settings:get", (_e, k, f) => writes.getSetting(db, k, f));
   ipcMain.handle("settings:set", (_e, k, v) => writes.setSetting(db, k, v));
+  // Same behavior as main.js under an isolated IMAGE_TAGGER_HOME profile
+  // (always true for this smoke test): no real network call.
+  ipcMain.handle("app:getVersion", () => app.getVersion());
+  ipcMain.handle("app:checkForUpdates", () =>
+    ({ ok: false, error: "update checks are disabled in a dev/test profile" }));
+  ipcMain.handle("app:openReleasePage", () => false);
   ipcMain.handle("indexer:call", (_e, cmd, args) => {
     // Renderer regression: a rescan that removes indexed files must also
     // refresh an already-visible search result list.
@@ -386,6 +392,22 @@ app.whenReady().then(async () => {
         && sourcesNarrow.scrollerScroll >= sourcesNarrow.scrollerClient
         && modelsNarrow.documentWidth <= modelsNarrow.viewport + 1
         && modelsNarrow.scroller;
+
+      // Settings > Updates (§ new): version shows, the check button exists
+      // and is clickable, and — since this smoke test runs under an isolated
+      // IMAGE_TAGGER_HOME profile — main.js must refuse a real network call
+      // rather than silently attempting one.
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid=tab-settings]').click()`);
+      await new Promise((r) => setTimeout(r, 300));
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid=check-updates]').click()`);
+      await new Promise((r) => setTimeout(r, 300));
+      const updates = await win.webContents.executeJavaScript(`(() => ({
+        version: document.body.textContent.includes('Version') &&
+          !!document.querySelector('[data-testid=check-updates]'),
+        disabledMessage: (document.querySelector('[data-testid=update-status]')?.textContent || '')
+      }))()`);
+      console.log(`  settingsUpdates=${JSON.stringify(updates)}`);
+      const updatesOk = updates.version && /disabled in a dev\/test profile/.test(updates.disabledMessage);
       await win.webContents.executeJavaScript(`document.querySelector('[data-testid=tab-search]').click()`);
 
       await win.webContents.executeJavaScript(
@@ -408,7 +430,7 @@ app.whenReady().then(async () => {
         && previewZoom.buttonZoom === '125%' && previewZoom.wheelZoom === '120%'
         && previewZoom.closed
         && selectionOk && variantsOk && sourceScan && /unchanged/.test(sourceMessage)
-        && responsiveOk && rowsAfterRescan === 0;
+        && responsiveOk && rowsAfterRescan === 0 && updatesOk;
       console.log(ok ? "RESULT: PASS — Electron window renders the Angular app with live data"
                      : "RESULT: FAIL — window did not render expected content");
       await bridge.stop();

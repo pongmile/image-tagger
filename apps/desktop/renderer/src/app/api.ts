@@ -31,6 +31,21 @@ export interface FileDetail {
 }
 export interface Category { id: number; name: string; color: string | null; is_builtin: number; }
 
+// Update check (see apps/desktop/src/main/updater.js) — not a full
+// auto-updater: it only reports whether the latest GitHub Release is newer
+// than this build and hands back a URL to it, so the user still goes
+// through the same, already-tested installer flow to actually update.
+export interface UpdateCheckResult {
+  ok: boolean;
+  error?: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+  url?: string;
+  notes?: string;
+  checkedAt?: number;
+}
+
 export interface TagRow {
   category: string;
   name: string;
@@ -228,6 +243,9 @@ export interface Api {
   setSetting(key: string, value: string): Promise<string>;
   bulkAddTag(fileIds: number[], category: string, name: string): Promise<number>;
   bulkRemoveTag(fileIds: number[], category: string, name: string): Promise<number>;
+  getAppVersion?(): Promise<string>;
+  checkForUpdates?(force?: boolean): Promise<UpdateCheckResult>;
+  openReleasePage?(url: string): Promise<boolean>;
   indexer: IndexerApi;
 }
 
@@ -512,6 +530,11 @@ function mockApi(): Api {
       ids.forEach((id) => this.removeTag(id, category, name));
       return ids.length;
     },
+    async getAppVersion() { return '0.0.0-dev'; },
+    async checkForUpdates() {
+      return { ok: true, currentVersion: '0.0.0-dev', latestVersion: '0.0.0-dev', updateAvailable: false };
+    },
+    async openReleasePage() { return false; },
     indexer: {
       // Demo semantic ranking: score by keyword overlap with tags, stable order.
       async semantic(query, k = 20) {

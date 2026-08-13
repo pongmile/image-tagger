@@ -27,6 +27,13 @@ contextBridge.exposeInMainWorld("api", {
   bulkRemoveTag: (fileIds, category, name) =>
     ipcRenderer.invoke("tag:bulkRemove", fileIds, category, name),
 
+  // Update check (convenience + install/update-bug avoidance, see updater.js):
+  // reports whether the latest GitHub Release is newer than this build, and
+  // opens the official release page for the user to download/run themselves.
+  getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
+  checkForUpdates: (force) => ipcRenderer.invoke("app:checkForUpdates", { force }),
+  openReleasePage: (url) => ipcRenderer.invoke("app:openReleasePage", url),
+
   // Python indexer control (spec §4) + semantic search (§8) + live progress.
   indexer: {
     semantic: (query, k) => ipcRenderer.invoke("indexer:semantic", query, k),

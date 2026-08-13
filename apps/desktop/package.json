@@ -11,7 +11,8 @@
     "dist": "electron-builder --win nsis zip --x64",
     "postinstall": "electron-builder install-app-deps",
     "test:smoke": "node ../../scripts/run-electron.js smoke.js",
-    "test:ui": "node ../../scripts/run-electron.js win-smoke.js"
+    "test:ui": "node ../../scripts/run-electron.js win-smoke.js",
+    "test:updater": "node test-updater.js"
   },
   "dependencies": {
     "better-sqlite3": "12.10.0"

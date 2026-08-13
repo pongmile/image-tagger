@@ -1,6 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { LibraryService } from './library.service';
-import { Category } from './api';
+import { Category, UpdateCheckResult } from './api';
 
 /** Full Settings page (moved out of the old narrow slide-out drawer, per
  * request — a real menu of its own instead of a cramped 320px panel):
@@ -70,6 +70,21 @@ import { Category } from './api';
           <button (click)="addCategory(cn, cc)" data-testid="cat-add">Add</button>
         </div>
       </section>
+
+      <section class="card">
+        <h3>Updates</h3>
+        <div class="hint">Version {{ appVersion() }}</div>
+        <button (click)="checkForUpdates()" [disabled]="checkingUpdate()" data-testid="check-updates">
+          {{ checkingUpdate() ? 'checking…' : 'Check for updates' }}
+        </button>
+        @if (updateStatus()) { <div class="hint" data-testid="update-status">{{ updateStatus() }}</div> }
+        @if (updateInfo()?.updateAvailable) {
+          <button (click)="openReleasePage()" data-testid="open-release">
+            &#8595; Download v{{ updateInfo()!.latestVersion }}
+          </button>
+        }
+        <div class="hint">Downloads open the official GitHub release page — this app never auto-installs anything for you, so a bad update can't silently break your install.</div>
+      </section>
     </div>
   `,
   styles: [`
@@ -105,6 +120,10 @@ export class SettingsComponent {
   readonly tagFromMeta = signal(true);
   readonly reindexingAll = signal(false);
   readonly reindexAllMessage = signal('');
+  readonly appVersion = signal('');
+  readonly checkingUpdate = signal(false);
+  readonly updateStatus = signal('');
+  readonly updateInfo = signal<UpdateCheckResult | null>(null);
 
   // Same "All" default rationale as the search bar's confidence filter
   // (app.component.ts): 0.5 would silently hide previously-visible general
@@ -124,6 +143,11 @@ export class SettingsComponent {
     void this.lib.listCategories().then((c) => this.categories.set(c));
     void this.lib.getSetting('tag_from_path', '1').then((v) => this.tagFromPath.set(v !== '0'));
     void this.lib.getSetting('tag_from_metadata', '1').then((v) => this.tagFromMeta.set(v !== '0'));
+    void this.lib.getAppVersion().then((v) => this.appVersion.set(v));
+    // A cheap, cached read (updater.js keeps a 10-minute in-memory result, and
+    // main.js already warms it ~5s after launch) — opening Settings usually
+    // shows a result instantly instead of a spinner.
+    void this.checkForUpdates(false);
   }
 
   saveModelsDir(v: string) { this.modelsDir.set(v); void this.lib.setSetting('models_dir', v); }
@@ -154,5 +178,32 @@ export class SettingsComponent {
     } finally {
       this.reindexingAll.set(false);
     }
+  }
+
+  async checkForUpdates(force = true) {
+    this.checkingUpdate.set(true);
+    this.updateStatus.set(force ? 'Checking…' : '');
+    try {
+      const r = await this.lib.checkForUpdates(force);
+      this.updateInfo.set(r);
+      if (!r.ok) {
+        this.updateStatus.set(force ? `Couldn't check for updates: ${r.error ?? 'unknown error'}` : '');
+      } else if (r.updateAvailable) {
+        this.updateStatus.set(`A new version (v${r.latestVersion}) is available.`);
+      } else if (force) {
+        this.updateStatus.set(`You're up to date (v${r.currentVersion}).`);
+      } else {
+        this.updateStatus.set('');
+      }
+    } catch (e) {
+      if (force) this.updateStatus.set(`Couldn't check for updates: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.checkingUpdate.set(false);
+    }
+  }
+
+  openReleasePage() {
+    const url = this.updateInfo()?.url;
+    if (url) void this.lib.openReleasePage(url);
   }
 }
