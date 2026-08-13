@@ -285,6 +285,60 @@ app.whenReady().then(async () => {
         return { controls: true, streamed, naturalWidth, renderedWidth, initial, buttonZoom, wheelZoom,
           closed: !document.querySelector('[data-testid=lightbox]') };
       })()`);
+      // Lightbox prev/next browsing (§8.2): the ⟨/⟩ buttons and ArrowLeft/
+      // ArrowRight keys must step through the exact list currently being
+      // searched ("miku"), swapping the loaded full-res image each time.
+      const lightboxNav = await win.webContents.executeJavaScript(`(async () => {
+        const waitLoaded = async () => {
+          const deadline = Date.now() + 5000;
+          while (Date.now() < deadline) {
+            const image = document.querySelector('[data-testid=lightbox] img');
+            if (image?.src.startsWith('image-tagger:') && image.naturalWidth > 0) break;
+            await new Promise(r => setTimeout(r, 50));
+          }
+          await new Promise(r => setTimeout(r, 400)); // let the filename label re-render too
+        };
+        document.querySelector('[data-testid=thumb-img]')?.click();
+        await waitLoaded();
+        const startName = document.querySelector('.head .fn')?.textContent || '';
+        const prevBtn = document.querySelector('[data-testid=lightbox-prev]');
+        const nextBtn = document.querySelector('[data-testid=lightbox-next]');
+        const prevDisabledAtStart = prevBtn?.disabled ?? true;
+        const nextDisabledAtStart = nextBtn?.disabled ?? true;
+        nextBtn?.click();
+        await waitLoaded();
+        const afterClickName = document.querySelector('.head .fn')?.textContent || '';
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }));
+        await waitLoaded();
+        const afterKeyName = document.querySelector('.head .fn')?.textContent || '';
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowLeft' }));
+        await waitLoaded();
+        const afterBackName = document.querySelector('.head .fn')?.textContent || '';
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+        await new Promise(r => setTimeout(r, 50));
+        return { hasButtons: !!prevBtn && !!nextBtn, prevDisabledAtStart, nextDisabledAtStart, startName, afterClickName,
+          afterKeyName, afterBackName, closed: !document.querySelector('[data-testid=lightbox]') };
+      })()`);
+      // Multi-select grid preview (§8.2): picking >1 row must swap the right
+      // pane to a plain thumbnail grid + filenames — no tags/metadata clutter.
+      const multiSelect = await win.webContents.executeJavaScript(`(async () => {
+        const rs = [...document.querySelectorAll('[data-testid=row]')];
+        rs[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 100));
+        rs[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+        rs[2].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+        await new Promise(r => setTimeout(r, 300));
+        const head = document.querySelector('[data-testid=multi-head]')?.textContent || '';
+        const cells = document.querySelectorAll('[data-testid=multi-cell]').length;
+        const names = [...document.querySelectorAll('[data-testid=multi-cell] .multi-name')]
+          .map(x => x.textContent.trim()).filter(Boolean).length;
+        const tagsInGrid = document.querySelectorAll('app-preview .tag').length;
+        rs[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 100));
+        return { head, cells, names, tagsInGrid };
+      })()`);
+      console.log(`  lightboxNav=${JSON.stringify(lightboxNav)}`);
+      console.log(`  multiSelect=${JSON.stringify(multiSelect)}`);
       // Capture before deliberately scrolling the preview so the artifact is a
       // useful full-window visual review, not a scrolled implementation detail.
       const img = await win.webContents.capturePage();
@@ -421,6 +475,13 @@ app.whenReady().then(async () => {
         && JSON.stringify(variantsAfterReopen) === JSON.stringify(expectedVariants);
       const selectionOk = selection.shift === 4 && selection.marquee === 3 && selection.menu
         && selection.bulk && selection.properties;
+      const lightboxNavOk = lightboxNav.hasButtons && lightboxNav.prevDisabledAtStart
+        && lightboxNav.afterClickName !== lightboxNav.startName
+        && lightboxNav.afterKeyName !== lightboxNav.afterClickName
+        && lightboxNav.afterBackName === lightboxNav.afterClickName
+        && lightboxNav.closed;
+      const multiSelectOk = /3 images selected/.test(multiSelect.head) && multiSelect.cells === 3
+        && multiSelect.names === 3 && multiSelect.tagsInGrid === 0;
       const ok = /results/.test(count) && rows > 0 && tags > 0 && scrollOk
         && liveProgress
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
@@ -429,6 +490,7 @@ app.whenReady().then(async () => {
         && previewZoom.renderedWidth > 600 && previewZoom.initial === '100%'
         && previewZoom.buttonZoom === '125%' && previewZoom.wheelZoom === '120%'
         && previewZoom.closed
+        && lightboxNavOk && multiSelectOk
         && selectionOk && variantsOk && sourceScan && /unchanged/.test(sourceMessage)
         && responsiveOk && rowsAfterRescan === 0 && updatesOk;
       console.log(ok ? "RESULT: PASS — Electron window renders the Angular app with live data"

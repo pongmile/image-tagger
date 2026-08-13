@@ -13,8 +13,23 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
   imports: [DecimalPipe, ZoomableLightboxComponent],
   template: `
     @let id = lib.selectedId();
+    @let ids = lib.selectedIds();
     @if (id == null) {
       <div class="empty">Select a result to see its tags, caption, and faces.</div>
+    } @else if (ids.size > 1) {
+      <div class="multi-head" data-testid="multi-head">{{ ids.size }} images selected</div>
+      <div class="multi-grid" data-testid="multi-grid">
+        @for (f of selectedFiles(); track f.id) {
+          <div class="multi-cell" data-testid="multi-cell">
+            @if (multiThumbs().get(f.id); as src) {
+              <img class="multi-thumb" [src]="src" [alt]="f.filename" />
+            } @else {
+              <div class="multi-thumb ph"></div>
+            }
+            <div class="multi-name" [title]="f.filename">{{ f.filename }}</div>
+          </div>
+        }
+      </div>
     } @else {
       <div class="head">
         <div class="fn">{{ file()?.filename }}</div>
@@ -32,7 +47,8 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
 
       @if (lightboxOpen()) {
         <app-zoomable-lightbox [src]="lightboxSrc()" [alt]="file()?.filename || ''"
-                                (closed)="closeLightbox()" />
+                                [canPrev]="hasPrev()" [canNext]="hasNext()"
+                                (closed)="closeLightbox()" (prev)="goToAdjacent(-1)" (next)="goToAdjacent(1)" />
       }
 
       @let d = lib.detail();
@@ -181,6 +197,15 @@ import { ZoomableLightboxComponent } from './zoomable-lightbox.component';
             height: 100%; max-height: 100%; min-height: 0; box-sizing: border-box;
             scrollbar-gutter: stable; }
     .empty { color: var(--fg-dim); font-size: 13px; }
+    .multi-head { font-size: 12px; color: var(--fg-dim); margin-bottom: 10px; }
+    .multi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+                  gap: 10px; }
+    .multi-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .multi-thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: var(--bg-2);
+                   border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+    .multi-thumb.ph { display: block; }
+    .multi-name { font-size: 11px; color: var(--fg-dim); white-space: nowrap; overflow: hidden;
+                  text-overflow: ellipsis; text-align: center; }
     .head .fn { font-weight: 600; word-break: break-all; }
     .head .meta { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
     .head .meta .reidx { margin-left: 8px; font-size: 11px; padding: 3px 9px;
@@ -310,6 +335,21 @@ export class PreviewComponent {
   readonly teachSpace = signal<'clip' | 'face'>('clip');
   private selectionContextId: number | null = null;
 
+  // Multi-select grid preview (§8.2): when more than one row is selected, show
+  // a plain thumbnail grid + filenames instead of the single-file tag/caption/
+  // metadata view, which would otherwise show stale detail for whichever file
+  // happened to be selected last and just adds clutter for a multi-pick.
+  readonly selectedFiles = computed(() => {
+    const ids = this.lib.selectedIds();
+    return this.lib.results().filter((f) => ids.has(f.id));
+  });
+  readonly multiThumbs = signal<Map<number, string>>(new Map());
+  private multiThumbLoaded = new Set<number>();
+
+  // Set while goToAdjacent() is swapping the focused file so the selection-
+  // change effect below doesn't slam the lightbox shut mid-navigation.
+  private suppressLightboxClose = false;
+
   constructor() {
     // Feedback belongs to the image on which the action was performed.  Clear
     // it immediately when the focused row changes so a confirmation made on
@@ -322,9 +362,26 @@ export class PreviewComponent {
       this.teachStatus.set('');
       this.editing.set(null);
       this.ocrOpen.set(false);
-      this.closeLightbox();
+      if (!this.suppressLightboxClose) this.closeLightbox();
       if (this.justConfirmedTimer) clearTimeout(this.justConfirmedTimer);
       this.justConfirmed.set(null);
+    });
+    // Lazily fetch a thumbnail per selected file for the multi-select grid —
+    // independent of loadSelection()'s single-file thumbUri, and only once per
+    // file id (cached for the component's lifetime, cheap to keep around).
+    effect(() => {
+      const ids = this.lib.selectedIds();
+      if (ids.size <= 1) return;
+      for (const fid of ids) {
+        if (this.multiThumbLoaded.has(fid)) continue;
+        this.multiThumbLoaded.add(fid);
+        void this.lib.thumb(fid).then((t) => {
+          if (!t) return;
+          const next = new Map(this.multiThumbs());
+          next.set(fid, t);
+          this.multiThumbs.set(next);
+        });
+      }
     });
     void this.lib.listCategories().then((c) => this.teachCategories.set(c));
     void this.lib.listTags().then((r) => this.allTagNames.set(r.tags));
@@ -379,6 +436,39 @@ export class PreviewComponent {
   closeLightbox() {
     this.lightboxOpen.set(false);
     this.lightboxSrc.set(null);
+  }
+
+  // Prev/next browsing within the current search-result list (§8.1/§8.2): the
+  // lightbox itself is list-agnostic, so this component computes the
+  // adjacent file from lib.results() (the exact list the user is searching)
+  // and re-runs the same selection + full-image load openLightbox() does.
+  private adjacentIndex(delta: number): number {
+    const id = this.lib.selectedId();
+    if (id == null) return -1;
+    const list = this.lib.results();
+    const idx = list.findIndex((f) => f.id === id);
+    if (idx === -1) return -1;
+    const next = idx + delta;
+    return next >= 0 && next < list.length ? next : -1;
+  }
+
+  readonly hasPrev = computed(() => this.adjacentIndex(-1) !== -1);
+  readonly hasNext = computed(() => this.adjacentIndex(1) !== -1);
+
+  async goToAdjacent(delta: number) {
+    const idx = this.adjacentIndex(delta);
+    if (idx === -1) return;
+    const nextId = this.lib.results()[idx].id;
+    this.suppressLightboxClose = true;
+    try {
+      await this.lib.select(nextId);
+    } finally {
+      this.suppressLightboxClose = false;
+    }
+    if (!this.lightboxOpen()) return; // closed while the selection was loading
+    this.lightboxSrc.set(this.thumb());
+    const full = await this.lib.fullImage(nextId);
+    if (this.lightboxOpen() && this.lib.selectedId() === nextId && full) this.lightboxSrc.set(full);
   }
 
   isEditing(t: TagRow) { return this.editing() === t.category + ' ' + t.name; }
