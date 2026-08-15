@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0
+
+- Search: list view rows no longer overflow the panel and push Kind/Dimensions/Size off-screen at narrow window widths; added a sortable Date (last modified) column
+- Indexing: captions are now cached per model, so a routine reindex or caption-model backfill no longer regenerates every already-captioned file from scratch — "Regen all captions" and the preview pane's "↻ re-Description" still always force a fresh redo
+- Indexing: videos are fully excluded from tagging/captioning queues and progress counts — they were never taggable, but bulk actions used to queue and read them anyway, wasting disk I/O and pinning the Tags/Caption bars below 100% forever
+- Search/Sources: progress reporting is unified into one shared status strip shown above every page, with a per-stage (Scan/Index/Tags/Description) and per-media (images/videos) breakdown, and a real GPU device badge instead of an unverifiable "GPU available" claim
+- Fixed onnxruntime silently falling back to CPU because the standalone CUDA DLLs it needs weren't on the loader's search path
+
+## 0.8.0
+
+- Per-model tag/caption caching: switching a model and switching back restores the prior model's output instantly instead of re-running inference; bulk reindex benefits automatically
+- Caption-model switches no longer force-recaption every already-captioned file; added an explicit "Regen all captions" action for the deliberate full-redo case
+- Single-file actions (reindex/recaption/retag) now run immediately regardless of Pause Tagger, without blocking the daemon's RPC loop
+- Renamed Pause/Resume to "Pause Tagger"/"Resume Tagger"; Models/People pages now cache their last-loaded data instead of reloading from scratch on every navigation
+- Fixed a variant-only runtime failure (e.g. missing bitsandbytes for a 4-bit caption variant) being silently reported as "ready" and then failing at model-load time
+- Fixed the outstanding-queue count and the coverage bars contradicting each other by rendering different units side by side with no explanation
+
 ## 0.6.0
 
 - Captioning (BLIP/JoyCaption) and Real faces (InsightFace) no longer block or error out the rest of a file's indexing when their model isn't installed yet — they're skipped gracefully (with a log line explaining why) instead of failing the whole file; a genuine engine load failure (as opposed to "not installed") still surfaces as a real error, unchanged
