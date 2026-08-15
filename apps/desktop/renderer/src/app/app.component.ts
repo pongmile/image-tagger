@@ -8,6 +8,7 @@ import { FacesComponent } from './faces.component';
 import { LearnedComponent } from './learned.component';
 import { SourcesComponent } from './sources.component';
 import { SettingsComponent } from './settings.component';
+import { IndexStatusComponent } from './index-status.component';
 import { IS_ELECTRON } from './api';
 
 type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
@@ -19,7 +20,8 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [ResultGridComponent, PreviewComponent, ModelManagerComponent, FacesComponent, LearnedComponent, SourcesComponent, SettingsComponent, DecimalPipe],
+  imports: [ResultGridComponent, PreviewComponent, ModelManagerComponent, FacesComponent, LearnedComponent, SourcesComponent, SettingsComponent,
+            IndexStatusComponent, DecimalPipe],
   template: `
     <nav class="tabs">
       <span class="brand"><span class="mark">IT</span><span>Image Tagger</span></span>
@@ -31,6 +33,12 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
       <button [class.on]="view() === 'settings'" (click)="view.set('settings')" data-testid="tab-settings">Settings</button>
       <span class="env" [class.mock]="!electron">{{ electron ? 'live' : 'demo data' }}</span>
     </nav>
+
+    <!-- Above the tab switch on purpose: "what is the program doing" is not a
+         Search-page question. This used to live inside the Search header only,
+         with Sources keeping a near-copy that disagreed with it and every
+         other tab showing nothing at all. -->
+    <app-index-status></app-index-status>
 
     @if (view() === 'models') { <app-model-manager></app-model-manager> }
     @else if (view() === 'people') { <app-faces></app-faces> }
@@ -121,10 +129,9 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
           <span data-testid="count">{{ lib.total() | number }} results</span>
           @if (lib.results().length < lib.total()) { <span class="dim">(showing {{ lib.results().length }})</span> }
           @if (lib.queryMs() > 0) { <span class="dim">· {{ lib.queryMs() }} ms</span> }
-          <span class="workingnotice" data-testid="working-status">
-            @if (workingLabel()) { <span class="wl">· ⚙ {{ workingLabel() }}</span> }
-            @if (ramLabel()) { <span class="ram">· {{ ramLabel() }}</span> }
-          </span>
+          <!-- The working file and RAM figure moved to <app-index-status>,
+               where they sit next to the rest of the indexer's state instead
+               of trailing off the end of the search result count. -->
         </div>
 
         <div class="indexbar" data-testid="indexbar">
@@ -150,22 +157,12 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
           }
           @if (indexing()) {
             <div class="progress" [class.paused]="paused()" data-testid="progress"
-                 [title]="'Files still queued for tagging/captioning. The bars below show how much of the library already has each kind of output — a reindex re-queues files that already have tags, so this number can be large while those stay high.\n' + jobsLabel()">
+                 [title]="queueTitle()">
               <div class="fill" [style.width.%]="pct()"></div>
-              <span class="pl">{{ paused() ? 'paused' : 'indexing' }} · {{ pending() | number }} queued</span>
+              <span class="pl">{{ paused() ? 'paused' : 'indexing' }} · {{ queued() | number }} jobs left</span>
             </div>
           } @else {
             <span class="idle" data-testid="idle">idle · {{ prog()?.files_total || 0 }} files indexed</span>
-          }
-        </div>
-
-        <div class="stagebar" data-testid="stagebar">
-          @for (s of stages(); track s.label) {
-            <span class="stage" [title]="s.title" [attr.data-stage]="s.label">
-              <span class="stagelabel">{{ s.label }}</span>
-              <span class="stagetrack"><span class="stagefill" [style.width.%]="s.pct"></span></span>
-              <span class="stagenum">{{ s.done | number }}/{{ s.total | number }}</span>
-            </span>
           }
         </div>
       </div>
@@ -289,6 +286,18 @@ type View = 'search' | 'sources' | 'models' | 'people' | 'learned' | 'settings';
                  border-radius: 999px; transition: width .3s; }
     .stagenum { font-size: 10px; color: var(--fg-dim); white-space: nowrap;
                 font-variant-numeric: tabular-nums; }
+    /* Why Tags/Caption have a smaller denominator than Scan, said once, in
+       place, instead of leaving the difference to be read as a bug. */
+    .videonote { font-size: 10px; color: var(--fg-dim); opacity: .8; white-space: nowrap; }
+    .eta { font-size: 11px; color: var(--fg-dim); white-space: nowrap;
+           font-variant-numeric: tabular-nums; }
+    /* The device badge is the answer to "is it even using my GPU". It is
+       deliberately loud when the answer is no: a silent CPU fallback is the
+       exact failure this exists to surface, and it cost a 20x slowdown while
+       reporting itself as fine. */
+    .device { font-size: 10px; padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+              border: 1px solid var(--border); color: var(--fg-dim); background: var(--bg-2); }
+    .device.cpu { color: var(--warn, #e0a030); border-color: currentColor; }
 
     .synpanel { padding: 8px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--border); font-size: 11px; }
     .synpanel table { border-collapse: collapse; width: 100%; }
@@ -351,62 +360,21 @@ export class AppComponent {
   readonly rescanning = signal(false);
   readonly scanMessage = signal('');
   readonly bulkMessage = signal('');
-  readonly paused = computed(() => this.prog()?.paused ?? false);
   readonly mode = computed(() => this.prog()?.mode ?? 'auto');
   readonly errorCount = computed(() => this.prog()?.jobs['error'] ?? 0);
-  readonly indexing = computed(() => {
-    const p = this.prog();
-    if (!p) return false;
-    const active = (p.jobs['queued'] ?? 0) + (p.jobs['running'] ?? 0);
-    return active > 0 || p.files_done < p.files_total;
-  });
-  readonly pct = computed(() => {
-    const p = this.prog();
-    return p && p.files_total ? Math.round((p.files_done / p.files_total) * 100) : 0;
-  });
-  // Work still outstanding, shown as a count rather than a done/total ratio —
-  // see Progress.files_pending for why the ratio form was actively misleading
-  // next to the coverage bars.
-  readonly pending = computed(() => {
-    const p = this.prog();
-    if (!p) return 0;
-    return p.files_pending ?? Math.max(0, p.files_total - p.files_done);
-  });
-  // Per-stage progress (§12 observability). Every stage is measured in files
-  // out of the same files_total, so the four bars are directly comparable —
-  // the old single bar mixed file counts and job counts, which is what made
-  // "7,503" and "13,565" look contradictory. Stages the backend didn't report
-  // (older daemon) or that are switched off are dropped rather than drawn
-  // frozen at 0%.
-  readonly stages = computed(() => {
-    const p = this.prog();
-    if (!p || !p.files_total) return [];
-    const total = p.files_total;
-    const rows: { label: string; title: string; done: number; total: number; pct: number }[] = [];
-    const add = (label: string, title: string, done: number | undefined) => {
-      if (done == null) return;
-      rows.push({ label, title, done, total, pct: Math.round((done / total) * 100) });
-    };
-    // No 'Index' row: the bar in the control row above already *is* index
-    // progress ("indexing 59/1412"), and repeating the identical numbers
-    // directly beneath it reads as a rendering bug rather than as detail.
-    add('Scan', 'files read from disk (hash, dimensions, thumbnail)', p.scan_done);
-    if (p.facets?.['wd14'] !== false) add('Tags', 'WD14 general/character tagging', p.tag_done);
-    if (p.facets?.['caption'] !== false) add('Caption', 'natural-language description', p.caption_done);
-    return rows;
-  });
-  // §12 visibility: what the background process is doing and how much RAM it
-  // holds, so a large number in Task Manager has a visible cause in-app
-  // instead of leaving the user to guess.
-  readonly workingLabel = computed(() => {
-    const c = this.prog()?.current;
-    return c && c !== 'idle' ? c : '';
-  });
-  readonly ramLabel = computed(() => {
-    const mb = this.prog()?.rss_mb;
-    if (mb == null) return '';
-    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB RAM` : `${Math.round(mb)} MB RAM`;
-  });
+  // Indexing state comes from LibraryService, so this header, the Sources
+  // page and <app-index-status> cannot disagree — see LibraryService.stages
+  // for what they used to disagree about. The display of it now lives in
+  // <app-index-status>; what stays here is the *controls* row, which needs
+  // only enough state to label its own buttons and queue bar.
+  readonly paused = this.lib.paused;
+  readonly indexing = this.lib.indexing;
+  readonly queued = this.lib.queuedJobs;
+  readonly workingLabel = this.lib.workingLabel;
+  readonly pct = this.lib.queuePct;
+  readonly queueTitle = computed(() =>
+    'Jobs still queued or running. Each file can produce several jobs (scan, '
+    + 'tagging, description), so this counts work, not files.\n' + this.jobsLabel());
   jobsLabel() {
     const j = this.prog()?.jobs ?? {};
     return Object.entries(j).map(([k, v]) => `${k}:${v}`).join('  ');

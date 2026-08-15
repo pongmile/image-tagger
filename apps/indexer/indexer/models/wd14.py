@@ -145,10 +145,12 @@ class Wd14Engine(TaggerEngine):
         self.general_threshold = general_threshold
         self.character_threshold = character_threshold
         from .. import engine as _engine
+        _engine.ensure_gpu_libs(providers)
         self.session = ort.InferenceSession(
             str(model_path),
             providers=_engine.onnx_provider_options(providers or ["CPUExecutionProvider"]),
         )
+        _engine.note_onnx_session(self.session)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         # input shape [1, H, W, 3]; dims may be strings/None -> default 448.

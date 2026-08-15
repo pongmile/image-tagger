@@ -75,6 +75,29 @@ def _now() -> int:
     return int(time.time())
 
 
+# Videos are browse/search-only (§12 scope, config.VIDEO_EXT): they get a
+# thumbnail frame and filename/folder search, and no AI facet ever runs on
+# them. Every bulk enqueue and every progress denominator therefore has to
+# exclude them explicitly, because "all files" is the wrong population for
+# both questions:
+#
+#   * Queueing a video for infer/caption/tag/clip creates a job whose only
+#     possible outcome is "open the file, fail to decode it, give up" — and
+#     that failure is not free. imgio.open_oriented()'s OpenCV fallback reads
+#     the *entire* file into memory before it can conclude that a container it
+#     cannot demux is still a container it cannot demux. On a library with a
+#     few hundred GB of video that is hours of pure disk I/O per reindex for a
+#     result that was known in advance from the extension.
+#   * Counting a video in the Tags/Caption denominators pins those bars below
+#     100% forever, which reads as "indexing is stuck" rather than "these
+#     files were never in scope".
+#
+# mime is the signal rather than the extension because it is what search.js
+# already filters on; a NULL mime counts as an image, matching that same
+# default so rows ingested before the column was populated don't vanish.
+ANALYZABLE_SQL = "(mime IS NULL OR mime NOT LIKE 'video/%')"
+
+
 # --- App settings (per-library key/value, incl. the models directory) --------
 
 def get_setting(con, key: str, default=None):
@@ -431,6 +454,42 @@ def set_facet_cache(con, file_id: int, facet: str, model_key: str,
         )
 
 
+def get_caption_cache(con, file_id: int, model_key: str) -> str | None:
+    """The cached caption text for this exact (file, caption model), or None on
+    a cache miss. Mirrors get_facet_cache's wd14 pattern -- same table, a
+    plain {"text": ...} payload instead of a tag list -- for the same reason:
+    switching caption model and back should restore the previous model's
+    caption instantly, and a bulk "Reindex"/model-switch backfill should not
+    re-run generation (real GPU seconds per file) for a file whose caption
+    was already produced by the model that is still active.
+
+    An empty string is a legitimate cached result (a model can genuinely
+    produce no caption for some input) and is distinguished from a cache miss
+    by returning None only when no row exists at all -- caching the empty
+    outcome too, so an always-empty file is not retried at full model cost on
+    every reindex.
+    """
+    row = con.execute(
+        "SELECT payload FROM facet_model_cache WHERE file_id=? AND facet='caption' AND model_key=?",
+        (file_id, model_key),
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row["payload"]).get("text", "")
+
+
+def set_caption_cache(con, file_id: int, model_key: str, text: str) -> None:
+    payload = json.dumps({"text": text})
+    with con:
+        con.execute(
+            """INSERT INTO facet_model_cache (file_id, facet, model_key, payload, cached_at)
+               VALUES (?, 'caption', ?, ?, ?)
+               ON CONFLICT(file_id, facet, model_key)
+               DO UPDATE SET payload=excluded.payload, cached_at=excluded.cached_at""",
+            (file_id, model_key, payload, int(time.time())),
+        )
+
+
 def set_caption(con, file_id: int, caption: str) -> None:
     """Store a natural-language caption (§11) and refresh FTS so it's searchable."""
     with con:
@@ -650,10 +709,22 @@ def add_exclude_pattern(con, pattern: str) -> None:
 
 
 def list_roots(con) -> list[dict]:
-    """Every include/exclude scope root, with live index status per root (§7.0/§12):
-    total files under it, how many are fully indexed, how many still pending, and
-    when it was last indexed — so the UI can show 'D:\\Pictures — include · 12,431
-    files · 12,400 indexed · last indexed 3h ago'."""
+    """Every include/exclude scope root, with live index status per root (§7.0/§12).
+
+    Reports the same *coverage* measure the library-wide bars use (see
+    progress()), not index_status. Counting rows whose index_status is 'done'
+    answers "is this row fresh relative to the queue", which is a different
+    question and gives a wildly different answer: one "Reindex" click resets
+    almost every row to pending, so a folder whose images were all tagged and
+    described read "301/3,294" for hours directly underneath a Tags bar
+    saying 99%. Two numbers on one screen, contradicting each other, both
+    labelled as progress.
+
+    So each root reports what its files actually *have*: scanned, tagged,
+    described, out of the files that can have them (videos excluded, per
+    ANALYZABLE_SQL). Queue depth is still reported, but as live jobs — the
+    honest "work outstanding" number — rather than as stale rows.
+    """
     rows = con.execute(
         "SELECT id, path, mode, recursive, enabled FROM roots ORDER BY mode, path"
     ).fetchall()
@@ -661,18 +732,31 @@ def list_roots(con) -> list[dict]:
     for r in rows:
         like = r["path"].replace("\\", "/").rstrip("/") + "/%"
         agg = con.execute(
-            """SELECT count(*) total,
-                      sum(CASE WHEN index_status='done'  THEN 1 ELSE 0 END) done,
-                      sum(CASE WHEN index_status='error' THEN 1 ELSE 0 END) errors,
+            f"""SELECT count(*) total,
+                      sum(mime LIKE 'video/%')                             videos,
+                      sum({ANALYZABLE_SQL})                                analyzable,
+                      sum(sha256<>'')                                      scanned,
+                      sum({ANALYZABLE_SQL} AND image_kind IS NOT NULL)     tagged,
+                      sum({ANALYZABLE_SQL} AND caption IS NOT NULL
+                                           AND caption<>'')                captioned,
+                      sum(index_status='error')                            errors,
+                      sum(EXISTS(SELECT 1 FROM jobs j
+                                  WHERE j.file_id = files.id
+                                    AND j.state IN ('queued','running')))  queued,
                       max(indexed_at) last_indexed
                  FROM files WHERE REPLACE(path,'\\','/') LIKE ?""",
             (like,),
         ).fetchone()
         total = agg["total"] or 0
-        done = agg["done"] or 0
         out.append({"id": r["id"], "path": r["path"], "mode": r["mode"],
                     "recursive": bool(r["recursive"]), "enabled": bool(r["enabled"]),
-                    "files": total, "done": done, "pending": total - done,
+                    "files": total,
+                    "videos": agg["videos"] or 0,
+                    "analyzable": agg["analyzable"] or 0,
+                    "scanned": agg["scanned"] or 0,
+                    "tagged": agg["tagged"] or 0,
+                    "captioned": agg["captioned"] or 0,
+                    "queued": agg["queued"] or 0,
                     "errors": agg["errors"] or 0,
                     "last_indexed": agg["last_indexed"]})
     return out
@@ -908,10 +992,17 @@ def retry_errors(con, file_id: int | None = None) -> int:
 
 
 def recaption_root(con, root_id: int, *, priority: int = 100) -> int:
-    """Queue a caption-only regenerate (not a full reindex) for every indexed
-    file under one root — the Sources page's per-row "Desc" action, for
-    backfilling/refreshing descriptions on just one folder without re-running
-    wd14/clip/faces/ocr on files that don't need it.
+    """Queue a caption-only *regenerate* (not a full reindex) for every
+    indexed file under one root — the Sources page's per-row "↻ Desc" action
+    ("regenerate descriptions... for every indexed file in this folder"),
+    without re-running wd14/clip/faces/ocr on files that don't need it.
+
+    Enqueues kind='caption_force' rather than plain 'caption': this is a
+    deliberate "redo it" click, the same guarantee recaption_all() makes for
+    the whole library (see its docstring) -- the queued-job-level per-model
+    cache that skips regeneration for an unchanged model (added to cut a bulk
+    reindex/variant-switch backfill's redundant GPU cost) must not also make
+    *this* explicit click quietly do nothing when the model hasn't changed.
 
     Same priority=100 "interactive" tier as reindex_root — see its docstring.
     """
@@ -920,10 +1011,11 @@ def recaption_root(con, root_id: int, *, priority: int = 100) -> int:
         raise ValueError(f"source root {root_id} not found")
     like = r["path"].replace("\\", "/").rstrip("/") + "/%"
     file_ids = [row["id"] for row in con.execute(
-        "SELECT id FROM files WHERE REPLACE(path,'\\','/') LIKE ?", (like,)
+        f"SELECT id FROM files WHERE REPLACE(path,'\\','/') LIKE ? "
+        f"AND {ANALYZABLE_SQL}", (like,)
     ).fetchall()]
     for fid in file_ids:
-        enqueue_job(con, fid, "caption", priority=priority)
+        enqueue_job(con, fid, "caption_force", priority=priority)
     return len(file_ids)
 
 
@@ -944,7 +1036,8 @@ def reindex_root(con, root_id: int, *, priority: int = 100) -> int:
         raise ValueError(f"source root {root_id} not found")
     like = r["path"].replace("\\", "/").rstrip("/") + "/%"
     file_ids = [row["id"] for row in con.execute(
-        "SELECT id FROM files WHERE REPLACE(path,'\\','/') LIKE ?", (like,)
+        f"SELECT id FROM files WHERE REPLACE(path,'\\','/') LIKE ? "
+        f"AND {ANALYZABLE_SQL}", (like,)
     ).fetchall()]
     for fid in file_ids:
         enqueue_job(con, fid, "reindex", priority=priority)
@@ -992,8 +1085,14 @@ def reindex_all(con, *, priority: int = 100) -> int:
     unrelated jobs for the better part of an hour before doing anything
     visible. reindex_root() got this fix; reindex_all(), triggered by the same
     kind of deliberate click, had been missed.
+
+    Videos are excluded (see ANALYZABLE_SQL): a reindex exists to re-run the
+    AI facets, none of which apply to a video, and the ingest half would
+    re-hash every byte of them for nothing -- on a mixed library that is the
+    difference between reading tens of GB and reading hundreds.
     """
-    file_ids = [r["id"] for r in con.execute("SELECT id FROM files").fetchall()]
+    file_ids = [r["id"] for r in con.execute(
+        f"SELECT id FROM files WHERE {ANALYZABLE_SQL}").fetchall()]
     for fid in file_ids:
         enqueue_job(con, fid, "reindex", priority=priority)
     return len(file_ids)
@@ -1006,11 +1105,18 @@ def recaption_all(con, *, priority: int = 100) -> int:
     files with no caption at all, see daemon._set_variant), this is the
     deliberate "yes, I want every caption redone with the model I just
     picked" opt-in. Same "interactive" priority=100 tier as reindex_all(),
-    for the same reason -- see its docstring.
+    for the same reason -- see its docstring. Videos are excluded for the
+    same reason as reindex_all() -- there is no caption to regenerate.
+
+    Enqueues kind='caption_force' -- see recaption_root()'s docstring for why
+    this must bypass the per-model cache rather than go through plain
+    'caption', which would let an unchanged active model turn this
+    "regenerate everything" click into a no-op.
     """
-    file_ids = [r["id"] for r in con.execute("SELECT id FROM files").fetchall()]
+    file_ids = [r["id"] for r in con.execute(
+        f"SELECT id FROM files WHERE {ANALYZABLE_SQL}").fetchall()]
     for fid in file_ids:
-        enqueue_job(con, fid, "caption", priority=priority)
+        enqueue_job(con, fid, "caption_force", priority=priority)
     return len(file_ids)
 
 
@@ -1034,8 +1140,9 @@ def enqueue_missing_clip_embeddings(con) -> int:
             WHERE file_id IS NOT NULL AND state IN ('queued','running')
               AND kind IN ('reindex','infer','clip')"""
     ).fetchall()}
-    wanted = [int(r["id"]) for r in con.execute("SELECT id FROM files").fetchall()
-              if int(r["id"]) not in existing and int(r["id"]) not in active]
+    wanted = [int(r["id"]) for r in con.execute(
+        f"SELECT id FROM files WHERE {ANALYZABLE_SQL}").fetchall()
+        if int(r["id"]) not in existing and int(r["id"]) not in active]
     for file_id in wanted:
         enqueue_job(con, file_id, "clip")
     return len(wanted)
@@ -1049,10 +1156,11 @@ def enqueue_missing_captions(con) -> int:
     active = {int(r["file_id"]) for r in con.execute(
         """SELECT DISTINCT file_id FROM jobs
             WHERE file_id IS NOT NULL AND state IN ('queued','running')
-              AND kind IN ('reindex','infer','caption')"""
+              AND kind IN ('reindex','infer','caption','caption_force')"""
     ).fetchall()}
     wanted = [int(r["id"]) for r in con.execute(
-        "SELECT id FROM files WHERE caption IS NULL OR caption=''"
+        f"SELECT id FROM files WHERE (caption IS NULL OR caption='') "
+        f"AND {ANALYZABLE_SQL}"
     ).fetchall() if int(r["id"]) not in active]
     for file_id in wanted:
         enqueue_job(con, file_id, "caption")
@@ -1066,7 +1174,7 @@ def enqueue_job_for_captioned_files(con) -> int:
     active = {int(r["file_id"]) for r in con.execute(
         """SELECT DISTINCT file_id FROM jobs
             WHERE file_id IS NOT NULL AND state IN ('queued','running')
-              AND kind IN ('reindex','infer','caption')"""
+              AND kind IN ('reindex','infer','caption','caption_force')"""
     ).fetchall()}
     wanted = [int(r["id"]) for r in con.execute(
         "SELECT id FROM files WHERE caption IS NOT NULL AND caption<>''"
@@ -1110,15 +1218,22 @@ def bulk_remove_tag(con, file_ids, category: str, name: str) -> int:
 
 
 def progress(con) -> dict:
-    """Counts for the UI progress bar (§7/§12)."""
+    """Counts for the UI progress bar (§7/§12).
+
+    One query, one pass over `files`, rather than the seven separate
+    full-table COUNT(*) scans this used to run. It is called after *every*
+    job in the auto worker's loop (daemon._worker_thread), so on a library of
+    any size those scans were a per-file tax paid forever, competing for the
+    same SQLite file the UI reads its search results from.
+    """
     rows = con.execute(
         "SELECT state, count(*) c FROM jobs GROUP BY state"
     ).fetchall()
     by_state = {r["state"]: r["c"] for r in rows}
-    total = con.execute("SELECT count(*) c FROM files").fetchone()["c"]
-    done = con.execute(
-        "SELECT count(*) c FROM files WHERE index_status='done'"
-    ).fetchone()["c"]
+    # Queue depth in *jobs*, not files. files_pending below answers "how many
+    # rows are stale", which is a different (and much larger) number after a
+    # bulk reindex; the honest answer to "how much work is left" is this one.
+    jobs_pending = (by_state.get("queued", 0) + by_state.get("running", 0))
     # Per-stage counts for the split Scan/Tag/Caption progress bars (§12).
     #
     # All four are counted in *files*, deliberately: the earlier single bar
@@ -1133,37 +1248,102 @@ def progress(con) -> dict:
     # no job kind of their own at all -- they run as sub-steps inside one
     # 'infer' job -- so output existence is the only thing that can measure
     # them.
-    # Files still waiting on the queue. Reported separately from files_done
-    # because the two answer different questions and were being read as if
-    # they answered the same one: index_status tracks freshness *relative to
-    # the queue*, so one "Reindex all" click resets nearly every row to
-    # pending and files_done collapses to ~0 even though the library still
-    # has tags and captions on 6,000+ files. Shown to the user as "N queued"
-    # rather than as a done/total ratio, so it cannot be mistaken for the
-    # coverage bars below.
-    files_pending = con.execute(
-        "SELECT count(*) c FROM files WHERE index_status<>'done'"
-    ).fetchone()["c"]
-    scan_done = con.execute(
-        "SELECT count(*) c FROM files WHERE sha256<>''"
-    ).fetchone()["c"]
-    caption_done = con.execute(
-        "SELECT count(*) c FROM files WHERE caption IS NOT NULL AND caption<>''"
-    ).fetchone()["c"]
-    tag_done = con.execute(
-        "SELECT count(*) c FROM files WHERE image_kind IS NOT NULL"
-    ).fetchone()["c"]
+    #
+    # Each stage also reports its own *denominator*, because "all files" is
+    # the right one for exactly one of them. Videos are indexed rows (§12:
+    # thumbnail + filename search) but no AI facet ever runs on one, so
+    # counting them under Tags/Caption pinned those bars at the
+    # images/(images+videos) ratio permanently -- on a library that is a
+    # sixth video, a fully-tagged library showed 82% and looked stuck. Scan
+    # covers every row; Tags and Caption cover only what they can reach.
+    #
+    # files_pending is reported separately from files_done because the two
+    # answer different questions and were being read as if they answered the
+    # same one: index_status tracks freshness *relative to the queue*, so one
+    # "Reindex all" click resets nearly every row to pending and files_done
+    # collapses to ~0 even though the library still has tags and captions on
+    # thousands of files.
+    #
+    # Every stage is additionally broken out by media type. "What is the
+    # program doing" is not answerable from a single ratio per stage: Scan
+    # covers images *and* videos, Tags and Caption cover only images, and
+    # Index (queue freshness) covers both but means something different from
+    # all three. Reporting each stage's image and video halves separately lets
+    # the UI show that structure instead of asking the user to infer it from
+    # four totals that don't add up to each other.
+    video_sql = "mime LIKE 'video/%'"
+    row = con.execute(f"""
+        SELECT count(*)                                              total,
+               sum(index_status='done')                              done,
+               sum(index_status<>'done')                             pending,
+               sum(sha256<>'')                                       scan_done,
+               sum({video_sql})                                      videos,
+               sum({ANALYZABLE_SQL})                                 analyzable,
+               sum({ANALYZABLE_SQL} AND image_kind IS NOT NULL)      tag_done,
+               sum({ANALYZABLE_SQL} AND caption IS NOT NULL
+                                    AND caption<>'')                 caption_done,
+               sum({ANALYZABLE_SQL} AND sha256<>'')                  img_scanned,
+               sum({video_sql}      AND sha256<>'')                  vid_scanned,
+               sum({ANALYZABLE_SQL} AND index_status='done')         img_indexed,
+               sum({video_sql}      AND index_status='done')         vid_indexed,
+               sum({ANALYZABLE_SQL} AND index_status='error')        img_errors,
+               sum({video_sql}      AND index_status='error')        vid_errors
+          FROM files""").fetchone()
+    total = row["total"] or 0
+    analyzable = row["analyzable"] or 0
+    videos = row["videos"] or 0
+    # Per-media detail, keyed so the UI renders rows without re-deriving which
+    # stage applies to which media. A `None` video half means "this stage does
+    # not apply to video at all" — rendered as an explicit "not tagged" rather
+    # than as 0/0, which would read as work that never started.
+    media = {
+        "images": {
+            "total": analyzable,
+            "scanned": row["img_scanned"] or 0,
+            "indexed": row["img_indexed"] or 0,
+            "tagged": row["tag_done"] or 0,
+            "captioned": row["caption_done"] or 0,
+            "errors": row["img_errors"] or 0,
+        },
+        "videos": {
+            "total": videos,
+            "scanned": row["vid_scanned"] or 0,
+            "indexed": row["vid_indexed"] or 0,
+            "tagged": None,      # no facet ever runs on a video (§12 scope)
+            "captioned": None,
+            "errors": row["vid_errors"] or 0,
+        },
+    }
     # Which stages are actually switched on, so the UI can hide a bar that
     # could never reach 100% (a Caption bar frozen at 0% while captioning is
     # off reads as a bug, not as "that feature is disabled").
+    #
+    # Every inference facet is reported, not just the two with coverage bars.
+    # OCR, CLIP and face detection all cost real time per image, and a user
+    # watching "ocr · somefile.png" scroll past with no other mention of OCR
+    # anywhere has no way to know it is switched on, let alone that it is why
+    # each file is taking as long as it is. They have no coverage metric --
+    # an image with no text and an image never OCR'd both store nothing -- so
+    # they cannot get a bar, but they can and should be listed as running.
     from . import config as _config
-    facets = {f: _config.facet_enabled(con, f) for f in ("wd14", "caption")}
+    facets = {f: _config.facet_enabled(con, f)
+              for f in ("wd14", "caption", "ocr", "clip", "faces")}
     # "current"/"rss_mb" surface *why* the process is using the memory it's
     # using (§12) -- otherwise a loaded multi-GB model just looks like an
     # unexplained number in Task Manager with no link back to this app.
+    # "device" answers the question a user cannot otherwise answer at all:
+    # whether the GPU they installed a CUDA build for is the thing actually
+    # doing the work -- see engine.active_device_label().
     from . import status
-    return {"files_total": total, "files_done": done, "jobs": by_state,
-            "files_pending": files_pending,
-            "scan_done": scan_done, "caption_done": caption_done,
-            "tag_done": tag_done, "facets": facets,
-            "current": status.get(), "rss_mb": status.rss_mb()}
+    from . import engine as _engine
+    return {"files_total": total, "files_done": row["done"] or 0,
+            "jobs": by_state, "jobs_pending": jobs_pending,
+            "files_pending": row["pending"] or 0,
+            "videos_total": videos,
+            "analyzable_total": analyzable,
+            "scan_done": row["scan_done"] or 0, "scan_total": total,
+            "tag_done": row["tag_done"] or 0, "tag_total": analyzable,
+            "caption_done": row["caption_done"] or 0, "caption_total": analyzable,
+            "media": media,
+            "facets": facets, "current": status.get(), "rss_mb": status.rss_mb(),
+            "device": _engine.active_device_label()}

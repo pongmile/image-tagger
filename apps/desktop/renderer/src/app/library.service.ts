@@ -1,5 +1,46 @@
-import { Injectable, NgZone, inject, signal } from '@angular/core';
+import { Injectable, NgZone, computed, inject, signal } from '@angular/core';
 import { Api, FileDetail, FileRow, LearnSummary, ModelState, Person, Progress, SearchOpts, TagRow, getApi } from './api';
+
+/** One stage's row in the split progress display. */
+export interface StageRow {
+  label: string; title: string; done: number; total: number; pct: number;
+}
+
+/** One stage's counts for one media type. `null` = the stage never runs on
+ * that media type, which is different from "0 done" and must not render as a
+ * bar sitting at 0%. */
+export interface StageCell {
+  done: number; total: number; pct: number;
+}
+
+/** A stage, broken out by media type, for the detailed panel. */
+export interface StageDetail {
+  key: string;
+  label: string;
+  what: string;                 // plain-language "what this step does"
+  images: StageCell | null;
+  videos: StageCell | null;
+  videoNote?: string;           // shown in place of a video bar when N/A
+}
+
+/** An inference step that is switched on but has no coverage metric — an
+ * image with no text and an image never OCR'd both store nothing, so there is
+ * nothing to count. Listed anyway: it costs time per image, and a user
+ * watching "ocr · file.png" go by deserves to know it is running. */
+export interface RunningFacet { key: string; label: string; what: string; }
+
+/** Coarse "time remaining" wording. Deliberately imprecise past an hour: a
+ * queue whose rate depends on which model each file needs cannot honestly be
+ * predicted to the minute, and a confidently wrong "1h 47m" is worse than
+ * "about 2h". */
+export function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return 'under a minute';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = ms / 3_600_000;
+  if (hours < 10) return `${hours.toFixed(hours < 3 ? 1 : 0)}h`;
+  return `${Math.round(hours)}h`;
+}
 
 const folderOf = (p: string) => {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
@@ -71,6 +112,184 @@ export class LibraryService {
   readonly log = signal<{ ts: number; level: 'warn' | 'error' | 'info'; message: string }[]>([]);
   private static readonly LOG_MAX = 300;
 
+  // --- Indexing status, computed once and shared -----------------------------
+  //
+  // The Search header and the Sources page both display "how is indexing
+  // going". They used to answer it with two different calculations on the same
+  // payload — Sources drew one big bar from files_done/files_total while both
+  // pages drew coverage bars from the per-stage counts — and those two
+  // disagree by design after a bulk reindex, which resets index_status on
+  // nearly every row without touching a single stored tag. On a real library
+  // that put "0.7%" directly above "82%" on one screen. Everything below is
+  // the single source both pages now render, so they cannot drift again.
+
+  /** Per-stage coverage, each against its own denominator. */
+  readonly stages = computed<StageRow[]>(() => {
+    const p = this.progress();
+    if (!p || !p.files_total) return [];
+    const rows: StageRow[] = [];
+    const add = (label: string, title: string,
+                 done: number | undefined, total: number | undefined) => {
+      // An older daemon sends no per-stage total; files_total is then the only
+      // denominator available, even though it over-counts by the video rows.
+      const denom = total ?? p.files_total;
+      if (done == null || !denom) return;
+      rows.push({ label, title, done, total: denom,
+                  pct: Math.min(100, Math.round((done / denom) * 100)) });
+    };
+    add('Scan', 'files read from disk (hash, dimensions, thumbnail) — includes videos',
+        p.scan_done, p.scan_total);
+    // Index is freshness, not coverage: it counts files that are up to date
+    // with the current queue, and a reindex resets nearly all of them without
+    // a single stored tag being lost. It earns a row because it is the only
+    // one that answers "is there outstanding work on this file", but it is
+    // labelled and described as its own thing precisely so it is not read as
+    // a fourth coverage number that happens to disagree with the other three.
+    add('Index', 'up to date with the current models and settings — a reindex resets '
+        + 'this without losing tags or descriptions you already have',
+        p.files_done, p.files_total);
+    if (p.facets?.['wd14'] !== false) {
+      add('Tags', 'WD14 general/character tagging — images only; videos are not tagged',
+          p.tag_done, p.tag_total);
+    }
+    if (p.facets?.['caption'] !== false) {
+      add('Description', 'natural-language caption — images only; videos are not described',
+          p.caption_done, p.caption_total);
+    }
+    return rows;
+  });
+
+  /** Every stage, broken out by images vs videos — the detailed answer to
+   * "what is the program doing". Four stages, because they measure four
+   * genuinely different things and collapsing any two of them is what made
+   * the old display self-contradictory:
+   *
+   *   Scan    — the file has been read off disk. Images and videos alike.
+   *   Index   — the file is up to date with the current queue. Resets on a
+   *             reindex without any stored tag being lost, which is exactly
+   *             why it must not be confused with the coverage rows below it.
+   *   Tags    — WD14 has labelled it. Images only.
+   *   Caption — a description has been written. Images only.
+   */
+  readonly stageDetail = computed<StageDetail[]>(() => {
+    const p = this.progress();
+    const m = p?.media;
+    if (!p || !m) return [];
+    const cell = (done: number | null | undefined, total: number): StageCell | null =>
+      done == null ? null
+        : { done, total, pct: total ? Math.min(100, (done / total) * 100) : 0 };
+    const rows: StageDetail[] = [
+      { key: 'scan', label: 'Scan', what: 'read from disk — hash, dimensions, thumbnail',
+        images: cell(m.images.scanned, m.images.total),
+        videos: cell(m.videos.scanned, m.videos.total) },
+      { key: 'index', label: 'Index',
+        what: 'up to date with the current models and settings — a reindex resets '
+            + 'this without losing any tag or description you already have',
+        images: cell(m.images.indexed, m.images.total),
+        videos: cell(m.videos.indexed, m.videos.total) },
+    ];
+    if (p.facets?.['wd14'] !== false) {
+      rows.push({ key: 'tag', label: 'Tags', what: 'WD14 general / character / rating tagging',
+        images: cell(m.images.tagged, m.images.total),
+        videos: null, videoNote: 'videos are not tagged' });
+    }
+    if (p.facets?.['caption'] !== false) {
+      rows.push({ key: 'caption', label: 'Description', what: 'natural-language caption of the image',
+        images: cell(m.images.captioned, m.images.total),
+        videos: null, videoNote: 'videos are not described' });
+    }
+    return rows;
+  });
+
+  /** Enabled inference steps that cannot be measured, listed so the time they
+   * cost is at least visible. See RunningFacet. */
+  readonly runningFacets = computed<RunningFacet[]>(() => {
+    const f = this.progress()?.facets;
+    if (!f) return [];
+    const defs: RunningFacet[] = [
+      { key: 'ocr', label: 'OCR', what: 'reads text inside the image (Thai + English)' },
+      { key: 'clip', label: 'CLIP', what: 'scene/clothing labels + the embedding behind semantic search and learned tags' },
+      { key: 'faces', label: 'Faces', what: 'detects and clusters real faces' },
+    ];
+    return defs.filter((d) => f[d.key] === true);
+  });
+
+  readonly hasVideos = computed(() => (this.progress()?.videos_total ?? 0) > 0);
+
+  /** Jobs still queued or running — the honest "work remaining" number. */
+  readonly queuedJobs = computed(() => {
+    const p = this.progress();
+    if (!p) return 0;
+    return p.jobs_pending ?? this.activeJobs(p);
+  });
+
+  /** High-water mark of the current drain, so a progress bar has a stable
+   * denominator: the queue only shrinks while draining, and resets to zero
+   * once it empties. Maintained here, on the event path, rather than inside a
+   * computed — a computed may not write signals. */
+  readonly queuePeak = signal(0);
+
+  private trackQueuePeak(remaining: number) {
+    if (remaining === 0) {
+      if (this.queuePeak() !== 0) this.queuePeak.set(0);
+    } else if (remaining > this.queuePeak()) {
+      this.queuePeak.set(remaining);
+    }
+  }
+
+  /** How far through the current drain we are, 0-100. Against remaining jobs,
+   * matching the number printed beside it — the old bar filled from
+   * files_done/files_total, so one Reindex click emptied a bar that had just
+   * been full while the coverage bars underneath stayed at 99%. */
+  readonly queuePct = computed(() => {
+    const peak = this.queuePeak();
+    return peak > 0 ? Math.round(((peak - this.queuedJobs()) / peak) * 100) : 0;
+  });
+
+  readonly indexing = computed(() => {
+    const p = this.progress();
+    return !!p && this.queuedJobs() > 0;
+  });
+
+  readonly paused = computed(() => this.progress()?.paused ?? false);
+
+  /** What is actually running the models, e.g. "tagging/OCR CUDA · CLIP/caption CUDA". */
+  readonly deviceLabel = computed(() => this.progress()?.device || '');
+
+  /** Filename/stage the worker is on right now, blank when idle. */
+  readonly workingLabel = computed(() => {
+    const c = this.progress()?.current;
+    return c && c !== 'idle' ? c : '';
+  });
+
+  // Measured throughput, so "how long will this take" has an answer at all.
+  // Sampled from the cumulative done-job count, which only ever goes up
+  // (finished jobs are never deleted), over a rolling window — an instant
+  // rate computed between two adjacent events swings wildly, since one file
+  // can take 40ms from cache and the next 8s on a cold model load.
+  private rateSamples: { t: number; done: number }[] = [];
+  private static readonly RATE_WINDOW_MS = 60_000;
+  readonly throughput = signal<{ perMin: number; etaMs: number | null } | null>(null);
+
+  private sampleThroughput(p: Progress) {
+    const done = p.jobs['done'] ?? 0;
+    const now = Date.now();
+    if (p.paused) { this.rateSamples = []; this.throughput.set(null); return; }
+    this.rateSamples.push({ t: now, done });
+    const cutoff = now - LibraryService.RATE_WINDOW_MS;
+    while (this.rateSamples.length > 2 && this.rateSamples[0].t < cutoff) this.rateSamples.shift();
+    const first = this.rateSamples[0];
+    const elapsed = now - first.t;
+    // Need a few seconds of window before a rate means anything.
+    if (elapsed < 5_000 || done <= first.done) { this.throughput.set(null); return; }
+    const perMs = (done - first.done) / elapsed;
+    const remaining = p.jobs_pending ?? this.activeJobs(p);
+    this.throughput.set({
+      perMin: perMs * 60_000,
+      etaMs: perMs > 0 && remaining > 0 ? remaining / perMs : null,
+    });
+  }
+
   private seq = 0;
   private selectionSeq = 0;
   private progressWasActive = false;
@@ -112,20 +331,36 @@ export class LibraryService {
   private acceptProgress(p: Progress) {
     const previous = this.progress();
     const active = this.activeJobs(p) > 0;
-    const libraryChanged = previous != null &&
-      (previous.files_total !== p.files_total || previous.files_done !== p.files_done);
+    // Only a change in the *set of rows* can change what a search returns.
+    // files_done tracks index_status, which flips on nearly every completed
+    // job without adding or removing a single row — keying the refresh on it
+    // meant a 1,000-row search plus its count query (two full passes over the
+    // library, each running a custom match function per row) re-ran several
+    // times a second for the entire duration of a reindex, on the same SQLite
+    // file the indexer was writing to. That is what made the Search page
+    // crawl while indexing, and none of that work could ever change a result.
+    const libraryChanged = previous != null && previous.files_total !== p.files_total;
     const workFinished = this.progressWasActive && !active;
     this.progress.set(p);
     this.progressWasActive = active;
+    this.trackQueuePeak(p.jobs_pending ?? this.activeJobs(p));
+    this.sampleThroughput(p);
     if (libraryChanged || workFinished) this.scheduleProgressSearch();
   }
+
+  // Coalescing window for progress-driven refreshes. Deliberately long: a
+  // scan discovering files fires file_total changes continuously, and the
+  // results only need to catch up on a human timescale — the user gets fresh
+  // rows within a second or two either way, without the grid being rebuilt
+  // under their cursor while they try to click something.
+  private static readonly PROGRESS_SEARCH_DEBOUNCE_MS = 1500;
 
   private scheduleProgressSearch() {
     if (this.progressSearchTimer != null) return;
     this.progressSearchTimer = setTimeout(() => {
       this.progressSearchTimer = null;
       void this.runSearch();
-    }, 150);
+    }, LibraryService.PROGRESS_SEARCH_DEBOUNCE_MS);
   }
 
   private reconcileSelection(rows: FileRow[]) {

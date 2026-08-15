@@ -45,17 +45,30 @@ class BlipCaptionEngine(CaptionEngine):
                  cache_dir=None, device="cpu", max_new_tokens=30):
         from transformers import BlipProcessor, BlipForConditionalGeneration
         import torch
+        from .. import engine as _engine
         self._torch = torch
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.processor = BlipProcessor.from_pretrained(model_id, cache_dir=cache_dir)
+        # fp16 on GPU, fp32 on CPU. BLIP was loading at fp32 everywhere, which
+        # on a GPU is roughly twice the VRAM and about half the throughput for
+        # a captioner whose output is a short sentence -- the precision is not
+        # doing any visible work there. CPU stays fp32: half-precision matmuls
+        # are emulated there and would be slower, not faster.
+        dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
         self.model = BlipForConditionalGeneration.from_pretrained(
-            model_id, cache_dir=cache_dir).eval().to(device)
+            model_id, cache_dir=cache_dir, torch_dtype=dtype).eval().to(device)
+        self._dtype = dtype
+        _engine.note_torch_device(device)
 
     def caption(self, path):
         from ..imgio import open_oriented
         img = open_oriented(path).convert("RGB")
         inputs = self.processor(img, return_tensors="pt").to(self.device)
+        # Only the pixel tensor follows the model's dtype; token ids must stay
+        # integral, so a blanket .to(dtype) on the whole batch would break them.
+        if "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].to(self._dtype)
         with self._torch.no_grad():
             out = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
         return self.processor.decode(out[0], skip_special_tokens=True).strip()
@@ -91,6 +104,8 @@ class JoyCaptionEngine(CaptionEngine):
                 "variant instead on CPU-only machines.")
         from transformers import AutoProcessor, LlavaForConditionalGeneration
         import torch
+        from .. import engine as _engine
+        _engine.note_torch_device(device)
         self._torch = torch
         self.device = device
         self.max_new_tokens = max_new_tokens

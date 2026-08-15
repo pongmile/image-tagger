@@ -69,7 +69,9 @@ class RapidOcrEngine(OcrEngine):
     def __init__(self, min_confidence: float = 0.5,
                  providers: list[str] | None = None):
         from rapidocr_onnxruntime import RapidOCR  # lazy: import cost only if used
+        from .. import engine as _engine
         providers = providers or ["CPUExecutionProvider"]
+        _engine.ensure_gpu_libs(providers)
         use_cuda = "CUDAExecutionProvider" in providers
         use_dml = not use_cuda and "DmlExecutionProvider" in providers
         # RapidOCR's own wrapper only exposes cuda/dml toggles (no raw
@@ -91,6 +93,15 @@ class RapidOcrEngine(OcrEngine):
         self.providers = providers
         self.device = "cuda" if use_cuda else ("dml" if use_dml else "cpu")
         self.min_confidence = min_confidence
+        # RapidOCR keeps its sessions private behind its own wrapper objects;
+        # reach for one only well enough to report the truth, and shrug if the
+        # internal layout differs in another version.
+        for attr in ("text_det", "text_cls", "text_rec"):
+            inner = getattr(getattr(self._ocr, attr, None), "session", None)
+            session = getattr(inner, "session", inner)
+            if session is not None and hasattr(session, "get_providers"):
+                _engine.note_onnx_session(session)
+                break
 
     def recognize(self, path: str) -> list[Region]:
         result, _elapse = self._ocr(path)

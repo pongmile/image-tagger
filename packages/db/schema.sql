@@ -162,6 +162,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
+-- Every per-file job lookup goes through (file_id, state): set_job_state()
+-- asks "does this file still have a live job?" on *every* completion, and
+-- enqueue_job() asks "is one already queued?" on every enqueue. Finished jobs
+-- are never deleted, so the jobs table grows without bound relative to the
+-- library -- unindexed, each of those questions was a full scan of it. On a
+-- 7,500-file library that had already reached 42,000 job rows, one bulk
+-- reindex meant tens of millions of row visits spent re-deriving something
+-- an index answers directly. Created via CREATE INDEX IF NOT EXISTS in the
+-- schema every connect(), so existing libraries pick it up on next launch
+-- with no migration step.
+CREATE INDEX IF NOT EXISTS idx_jobs_file  ON jobs(file_id, state);
 
 -- Full-text search (fast path). Trigram = substring matching. ------
 -- Regular (not contentless) FTS5: the Python writer runs on a bundled SQLite
@@ -211,9 +222,10 @@ INSERT OR IGNORE INTO clip_labels (category, label) VALUES
 -- invisible to search, until its model is selected again.
 CREATE TABLE IF NOT EXISTS facet_model_cache (
   file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  facet      TEXT NOT NULL,        -- 'wd14' today; extensible later
+  facet      TEXT NOT NULL,        -- 'wd14' | 'caption'
   model_key  TEXT NOT NULL,        -- the variant id active when this was produced
-  payload    TEXT NOT NULL,        -- JSON: {"image_kind": "...", "tags": [{"category","name","confidence"}, ...]}
+  payload    TEXT NOT NULL,        -- JSON: wd14 -> {"image_kind","tags":[{"category","name","confidence"}]}
+                                    --       caption -> {"text": "..."}
   cached_at  INTEGER,
   PRIMARY KEY (file_id, facet, model_key)
 );

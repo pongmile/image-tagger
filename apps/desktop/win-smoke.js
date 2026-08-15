@@ -188,11 +188,31 @@ app.whenReady().then(async () => {
       // IPC progress must repaint without requiring any user click. Shaped
       // like db.progress()'s real payload, including the per-stage counts the
       // split Scan/Tags/Caption bars read.
-      const progressEvent = (done) => ({ files_total: 1412, files_done: done,
-        files_pending: 1412 - done,
-        jobs: { queued: 1412 - done, running: 1, done },
-        scan_done: 1412, tag_done: 1200, caption_done: 900,
-        facets: { wd14: true, caption: true }, paused: false, mode: 'auto' });
+      // 1,412 rows of which 212 are video: videos are scan-only, so Scan
+      // measures against all 1,412 while Tags/Caption measure against the
+      // 1,200 files a model can actually reach. Shaped this way deliberately —
+      // the two denominators differing is the fix being verified below.
+      const TOTAL = 1412, VIDEOS = 212, ANALYZABLE = TOTAL - VIDEOS;
+      const progressEvent = (done) => ({ files_total: TOTAL, files_done: done,
+        files_pending: TOTAL - done,
+        jobs: { queued: TOTAL - done, running: 1, done },
+        jobs_pending: TOTAL - done + 1,
+        scan_done: TOTAL, scan_total: TOTAL,
+        tag_done: 1000, tag_total: ANALYZABLE,
+        caption_done: 780, caption_total: ANALYZABLE,
+        videos_total: VIDEOS, analyzable_total: ANALYZABLE,
+        // Per-media breakdown behind the "details" panel. Videos are scanned
+        // but never tagged/described, so those halves are null — an explicit
+        // "does not apply", not a bar sitting at 0%.
+        media: {
+          images: { total: ANALYZABLE, scanned: ANALYZABLE, indexed: done,
+                    tagged: 1000, captioned: 780, errors: 0 },
+          videos: { total: VIDEOS, scanned: VIDEOS, indexed: 0,
+                    tagged: null, captioned: null, errors: 0 },
+        },
+        device: 'tagging/OCR CUDA · CLIP/caption CUDA',
+        facets: { wd14: true, caption: true, ocr: true, clip: true, faces: false },
+        paused: false, mode: 'auto' });
       win.webContents.send('indexer:progress', progressEvent(58));
       await new Promise((r) => setTimeout(r, 100));
       const live58 = await win.webContents.executeJavaScript(
@@ -201,11 +221,13 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 100));
       const live59 = await win.webContents.executeJavaScript(
         `document.querySelector('[data-testid=progress] .pl')?.textContent || ''`);
-      // Outstanding work is shown as a "N queued" count, not a done/total
-      // ratio: index_status measures freshness against the queue, so one
-      // "Reindex all" collapses files_done to ~0 while the coverage bars
-      // below still read 80%+ — as a ratio the two looked contradictory.
-      const liveProgress = /1,354 queued/.test(live58) && /1,353 queued/.test(live59);
+      // Outstanding work is shown as a count of *jobs*, not a done/total
+      // ratio and not a count of files: index_status measures freshness
+      // against the queue, so one "Reindex all" collapses files_done to ~0
+      // while the coverage bars below still read 80%+ — as a ratio the two
+      // looked contradictory — and it counts stale rows rather than work,
+      // which is a much larger number than the queue actually holds.
+      const liveProgress = /1,355 jobs left/.test(live58) && /1,354 jobs left/.test(live59);
       // Per-stage bars (§12): each stage must render a labelled, non-zero-width
       // track — a bar whose track is invisible or whose fill never moves is the
       // exact failure this split was meant to remove.
@@ -222,11 +244,82 @@ app.whenReady().then(async () => {
       // fillPct is measured against the track's border-box, so a fully-filled
       // bar reads a couple of percent short of 100 (the track carries a 1px
       // border each side). Assert "visually full" rather than an exact 100.
-      const stagesOk = stages.length === 3
+      //
+      // Each stage must also print *its own* denominator. Tags and Caption
+      // reading "/1,412" instead of "/1,200" is the specific bug this guards:
+      // videos can never be tagged or described, so counting them in those
+      // denominators pinned both bars below 100% permanently, and a fully
+      // caught-up library looked stuck at 82% with no way to tell that from a
+      // real stall.
+      // Four stages, not three: Index measures queue freshness and is a
+      // genuinely different question from the three coverage rows — it is the
+      // one that collapses after a reindex while the others stay high, and
+      // conflating it with them is what made the old display contradict
+      // itself.
+      const stagesOk = stages.length === 4
         && stages.every((s) => s.trackW > 10 && s.num)
         && stages[0].label === 'Scan' && stages[0].fillPct >= 95
-        && stages[1].label === 'Tags' && stages[1].fillPct > 80 && stages[1].fillPct < 90
-        && stages[2].label === 'Caption' && stages[2].fillPct > 60 && stages[2].fillPct < 70;
+        && stages[0].num === '1,412/1,412'
+        && stages[1].label === 'Index' && stages[1].num === '59/1,412'
+        && stages[2].label === 'Tags' && stages[2].fillPct > 80 && stages[2].fillPct < 90
+        && stages[2].num === '1,000/1,200'
+        && stages[3].label === 'Description' && stages[3].fillPct > 60 && stages[3].fillPct < 70
+        && stages[3].num === '780/1,200';
+
+      // The two things the user could not previously find out at all: what
+      // hardware is running the models, and why Tags/Caption count fewer
+      // files than Scan.
+      const statusBadges = await win.webContents.executeJavaScript(`
+        (() => ({
+          device: document.querySelector('[data-testid=device]')?.textContent?.trim() || '',
+          deviceIsCpu: !!document.querySelector('[data-testid=device].cpu'),
+          videoNote: document.querySelector('[data-testid=video-note]')?.textContent?.trim() || '',
+          current: document.querySelector('[data-testid=current-file]')?.textContent?.trim() || '',
+        }))();
+      `);
+      const badgesOk = /CUDA/.test(statusBadges.device)
+        && !statusBadges.deviceIsCpu
+        && /212 videos/.test(statusBadges.videoNote);
+
+      // The per-step breakdown: every stage split into images and videos, and
+      // the enabled-but-unmeasurable steps listed rather than left invisible.
+      // A video row for Tags must read as "does not apply", not as 0%.
+      await win.webContents.executeJavaScript(
+        `document.querySelector('[data-testid=status-details-toggle]').click()`);
+      await new Promise((r) => setTimeout(r, 300));
+      const detail = await win.webContents.executeJavaScript(`
+        (() => {
+          const rows = Array.from(document.querySelectorAll('[data-testid=status-detail] tbody tr'))
+            .map((tr) => ({
+              step: tr.getAttribute('data-step'),
+              cells: Array.from(tr.querySelectorAll('td')).slice(1).map((td) => {
+                const num = td.querySelector('.mininum')?.textContent?.trim();
+                return num || td.querySelector('.na')?.textContent?.trim() || '';
+              }),
+            }));
+          return {
+            rows,
+            headers: Array.from(document.querySelectorAll('[data-testid=status-detail] thead th'))
+              .map((th) => th.textContent.trim()),
+            facets: Array.from(document.querySelectorAll('[data-testid=status-detail] .facet'))
+              .map((f) => f.textContent.trim()),
+          };
+        })();
+      `);
+      const byStep = Object.fromEntries(detail.rows.map((r) => [r.step, r.cells]));
+      const detailOk = detail.headers.join('|') === 'Step|Images|Videos'
+        && detail.rows.length === 4
+        // Scan covers both media types; Tags/Description cover only images.
+        && byStep.scan?.[0] === '1,200/1,200' && byStep.scan?.[1] === '212/212'
+        && byStep.index?.[0] === '59/1,200'
+        && byStep.tag?.[0] === '1,000/1,200' && /not tagged/.test(byStep.tag?.[1] || '')
+        && byStep.caption?.[0] === '780/1,200' && /not described/.test(byStep.caption?.[1] || '')
+        // OCR and CLIP are on and cost time per image, but store nothing
+        // countable — listed by name instead of silently invisible.
+        && detail.facets.includes('OCR') && detail.facets.includes('CLIP')
+        && !detail.facets.includes('Faces');
+      await win.webContents.executeJavaScript(
+        `document.querySelector('[data-testid=status-details-toggle]').click()`);
 
       // Drive a search in the real renderer, then capture the window.
       await win.webContents.executeJavaScript(`
@@ -433,6 +526,8 @@ app.whenReady().then(async () => {
       console.log(`  previewZoom=${JSON.stringify(previewZoom)}`);
       console.log(`  liveProgress=${JSON.stringify({ live58, live59, ok: liveProgress })}`);
       console.log(`  stages=${JSON.stringify({ ok: stagesOk, stages })}`);
+      console.log(`  statusBadges=${JSON.stringify({ ok: badgesOk, ...statusBadges })}`);
+      console.log(`  statusDetail=${JSON.stringify({ ok: detailOk, ...detail })}`);
 
       // Re-enter Models: selected best/accurate variants must remain selected.
       await win.webContents.executeJavaScript(`document.querySelector('[data-testid=properties-dialog] button').click(); document.querySelector('[data-testid=tab-models]').click()`);
@@ -534,7 +629,7 @@ app.whenReady().then(async () => {
       const multiSelectOk = /3 images selected/.test(multiSelect.head) && multiSelect.cells === 3
         && multiSelect.names === 3 && multiSelect.tagsInGrid === 0;
       const ok = /results/.test(count) && rows > 0 && tags > 0 && scrollOk
-        && liveProgress && stagesOk && gridNav.ok
+        && liveProgress && stagesOk && badgesOk && detailOk && gridNav.ok
         && collapsible.controls && collapsible.collapsed && collapsible.expanded
         && feedbackScoped.controls && !feedbackScoped.stale
         && previewZoom.controls && previewZoom.streamed && previewZoom.naturalWidth === 4096

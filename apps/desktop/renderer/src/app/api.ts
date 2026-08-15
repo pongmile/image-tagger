@@ -70,6 +70,16 @@ export interface SearchOpts {
   regex?: boolean;
 }
 
+export interface MediaCounts {
+  total: number;
+  scanned: number;
+  indexed: number;
+  /** null = this stage never runs on this media type. */
+  tagged: number | null;
+  captioned: number | null;
+  errors: number;
+}
+
 export interface Progress {
   files_total: number;
   files_done: number;
@@ -81,11 +91,37 @@ export interface Progress {
   scan_done?: number;
   caption_done?: number;
   tag_done?: number;
+  // Each stage's own denominator. Only Scan covers the whole library: videos
+  // are indexed rows but no AI facet ever runs on one, so measuring Tags and
+  // Caption against files_total pinned them at the images/(images+videos)
+  // ratio forever — a fully-tagged library with a sixth of it video read as
+  // 82% and looked stuck. Absent on older backends, where files_total is the
+  // (wrong, but only available) fallback.
+  scan_total?: number;
+  tag_total?: number;
+  caption_total?: number;
+  videos_total?: number;
+  analyzable_total?: number;
+  // Every stage broken out by media type. One ratio per stage cannot say what
+  // the program is doing: Scan covers images and videos, Tags/Caption cover
+  // only images, and Index means something different from all three — so four
+  // totals that don't add up to each other is all the user could see. A null
+  // `tagged`/`captioned` on the video half means "never applies", which is
+  // rendered as such rather than as 0/0.
+  media?: {
+    images: MediaCounts;
+    videos: MediaCounts;
+  };
   // Files still waiting on the queue. Surfaced as "N queued" rather than as a
   // done/total ratio: index_status tracks freshness relative to the queue, so
   // one "Reindex all" resets almost every row and files_done collapses to ~0
   // while the coverage bars above still (correctly) read 6,000+.
   files_pending?: number;
+  // Queue depth in *jobs*, which is what "how much work is left" actually
+  // means — files_pending counts stale rows and is a much bigger number after
+  // a bulk reindex, which is why the header used to claim thousands queued
+  // while the coverage bars sat at 99%.
+  jobs_pending?: number;
   // Which stages are switched on, so a bar that could never fill (captioning
   // disabled) is hidden rather than shown frozen at 0%.
   facets?: Record<string, boolean>;
@@ -93,11 +129,23 @@ export interface Progress {
   mode?: 'auto' | 'manual';
   current?: string;
   rss_mb?: number | null;
+  // What is *actually* doing the inference, read back from the loaded models
+  // rather than from what was requested — the two can differ silently, and
+  // did. Null until the first model loads.
+  device?: string | null;
 }
 export interface Root {
   id: number; path: string; mode: 'include' | 'exclude';
   recursive: boolean; enabled: boolean; files: number;
-  done?: number; pending?: number; errors?: number; last_indexed?: number | null;
+  // Coverage, measured the same way as the library-wide bars: what these
+  // files actually have, out of the files that can have it. `files` counts
+  // every row including videos; `analyzable` excludes them, because no model
+  // ever runs on one. Reporting index_status here instead made a fully
+  // tagged folder read "301/3,294" under a Tags bar saying 99%.
+  videos?: number; analyzable?: number;
+  scanned?: number; tagged?: number; captioned?: number;
+  // Live jobs outstanding for this root — work remaining, not stale rows.
+  queued?: number; errors?: number; last_indexed?: number | null;
 }
 export interface TagInfo { id: number; name: string; category: string; files: number; }
 export interface RenameResult { ok: boolean; merged?: boolean; files?: number; name?: string; error?: string; }
@@ -406,9 +454,17 @@ function mockApi(): Api {
   ];
   const nowSec = Math.floor(Date.now() / 1000);
   const mockRoots: Root[] = [
-    { id: 1, path: 'D:/Pictures', mode: 'include', recursive: true, enabled: true, files: 420, done: 418, pending: 2, errors: 0, last_indexed: nowSec - 3600 },
-    { id: 2, path: 'D:/Pictures/WIP', mode: 'exclude', recursive: true, enabled: true, files: 0, done: 0, pending: 0, errors: 0, last_indexed: null },
-    { id: 3, path: 'E:/Anime', mode: 'include', recursive: true, enabled: false, files: 80, done: 80, pending: 0, errors: 1, last_indexed: nowSec - 172800 },
+    // 420 files of which 20 are video, so `tagged` is measured out of 400 —
+    // the same split the real backend sends.
+    { id: 1, path: 'D:/Pictures', mode: 'include', recursive: true, enabled: true, files: 420,
+      videos: 20, analyzable: 400, scanned: 420, tagged: 398, captioned: 390,
+      queued: 2, errors: 0, last_indexed: nowSec - 3600 },
+    { id: 2, path: 'D:/Pictures/WIP', mode: 'exclude', recursive: true, enabled: true, files: 0,
+      videos: 0, analyzable: 0, scanned: 0, tagged: 0, captioned: 0,
+      queued: 0, errors: 0, last_indexed: null },
+    { id: 3, path: 'E:/Anime', mode: 'include', recursive: true, enabled: false, files: 80,
+      videos: 0, analyzable: 80, scanned: 80, tagged: 80, captioned: 80,
+      queued: 0, errors: 1, last_indexed: nowSec - 172800 },
   ];
   const mockErrors: (ErrorRow & { root_id: number })[] = [
     { id: 1, file_id: 9001, kind: 'infer', error: "RuntimeError('CUDA out of memory')",
@@ -623,14 +679,24 @@ function mockApi(): Api {
       onScanDone(cb) { scanDoneCb = cb; return () => { scanDoneCb = () => {}; }; },
       async addRoot(path: string, mode?: string) {
         mockRoots.push({ id: mockRoots.length + 1, path, mode: (mode as any) || 'include',
-          recursive: true, enabled: true, files: 0 });
+          recursive: true, enabled: true, files: 0, videos: 0, analyzable: 0,
+          scanned: 0, tagged: 0, captioned: 0, queued: 0, errors: 0 });
         return { ok: true };
       },
       async progress() {
         return { files_total: seed.length, files_done: seed.length,
-          jobs: { done: seed.length },
+          jobs: { done: seed.length }, jobs_pending: 0,
           scan_done: seed.length, caption_done: seed.length, tag_done: seed.length,
-          facets: { wd14: true, caption: true },
+          scan_total: seed.length, caption_total: seed.length, tag_total: seed.length,
+          videos_total: 0, analyzable_total: seed.length,
+          media: {
+            images: { total: seed.length, scanned: seed.length, indexed: seed.length,
+                      tagged: seed.length, captioned: seed.length, errors: 0 },
+            videos: { total: 0, scanned: 0, indexed: 0,
+                      tagged: null, captioned: null, errors: 0 },
+          },
+          facets: { wd14: true, caption: true, ocr: true, clip: false, faces: false },
+          device: 'tagging/OCR CUDA · CLIP/caption CUDA',
           paused: mockPaused, mode: mockMode };
       },
       async pause() { mockPaused = true; return { paused: true }; },

@@ -51,12 +51,19 @@ class InsightFaceEngine(FaceEngine):
                  min_det_score=0.5, pack="buffalo_l"):
         from insightface.app import FaceAnalysis
         from .. import engine as _engine
+        _engine.ensure_gpu_libs(providers)
         self.min_det_score = min_det_score
         self.pack = pack
         self.app = FaceAnalysis(
             name=pack, root=str(model_dir) if model_dir else None,
             providers=_engine.onnx_provider_options(providers or ["CPUExecutionProvider"]))
         self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
+        # FaceAnalysis owns several sessions; they all share one provider
+        # choice, so any of them answers "what did onnxruntime really bind".
+        for model in getattr(self.app, "models", {}).values():
+            if getattr(model, "session", None) is not None:
+                _engine.note_onnx_session(model.session)
+                break
 
     def detect(self, path):
         import numpy as np

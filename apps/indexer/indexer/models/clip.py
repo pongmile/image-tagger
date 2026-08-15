@@ -93,11 +93,13 @@ class RealClipEngine(ClipEngine):
                  cache_dir=None, device="cpu"):
         import open_clip
         import torch
+        from .. import engine as _engine
         self._torch = torch
         self.device = device
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, pretrained=pretrained, cache_dir=cache_dir)
         self.model.eval().to(device)
+        _engine.note_torch_device(device)
         self.tokenizer = open_clip.get_tokenizer(model_name)
         self.dim = self.model.text_projection.shape[1]
         self._text_cache: dict[str, list[float]] = {}

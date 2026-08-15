@@ -1,6 +1,6 @@
-import { Component, effect, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { ErrorRow, ExcludeRule, Root, Progress, getApi } from './api';
+import { ErrorRow, ExcludeRule, Root, getApi } from './api';
 import { LibraryService } from './library.service';
 
 /** Sources / scan scope (spec §7.0): the include/exclude drives & folders that
@@ -39,29 +39,10 @@ import { LibraryService } from './library.service';
       @if (reindexAllMsg()) { <div class="msg" data-testid="reindex-all-msg">{{ reindexAllMsg() }}</div> }
       @if (recaptionAllMsg()) { <div class="msg" data-testid="recaption-all-msg">{{ recaptionAllMsg() }}</div> }
 
-      @let ovp = lib.progress();
-      @if (ovp) {
-        <div class="ovbar" data-testid="overall-progress">
-          <div class="ovtrack" [class.paused]="ovp.paused">
-            <div class="ovfill" [style.width.%]="ovp.files_total ? (ovp.files_done / ovp.files_total * 100) : 0"></div>
-          </div>
-          <span class="ovlabel"
-                title="Files still queued for tagging/captioning. The bars below show how much of the library already has each kind of output — a reindex re-queues files that already have tags, so this can be large while those stay high.">
-            {{ ovp.paused ? '⏸ paused' : '● indexing' }}
-            · {{ (ovp.files_pending ?? (ovp.files_total - ovp.files_done)) | number }} queued
-            @if (!ovp.paused && ovp.current && ovp.current !== 'idle') { <span class="ovcurrent">· {{ ovp.current }}</span> }
-          </span>
-        </div>
-        <div class="ovsplit" data-testid="overall-progress-split">
-          @for (row of ovCategories(ovp); track row.label) {
-            <div class="ovmini" [title]="row.title">
-              <span class="ovminilabel">{{ row.label }}</span>
-              <div class="ovminitrack"><div class="ovminifill" [style.width.%]="row.pct"></div></div>
-              <span class="ovmininum">{{ row.done | number }}/{{ row.total | number }}</span>
-            </div>
-          }
-        </div>
-      }
+      <!-- No library-wide progress display here any more: <app-index-status>
+           renders it above the tab switch, on every page including this one.
+           This page used to keep its own near-copy, which is how the two came
+           to disagree in the first place. -->
 
       <div class="addbar">
         <input #p placeholder="D:\\Pictures  or  E:\\Anime" [value]="draft()"
@@ -73,7 +54,7 @@ import { LibraryService } from './library.service';
 
       <div class="table-scroll">
       <table data-testid="roots-table">
-        <thead><tr><th>Folder / drive</th><th>Mode</th><th>Files</th><th>Indexed</th><th>Last indexed</th><th>Enabled</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Folder / drive</th><th>Mode</th><th>Files</th><th>Tagged</th><th>Last indexed</th><th>Enabled</th><th>Actions</th></tr></thead>
         <tbody>
           @for (r of roots(); track r.id) {
             <tr data-testid="root-row">
@@ -86,12 +67,19 @@ import { LibraryService } from './library.service';
                   <div class="rowbar indet"><div class="stripe"></div></div>
                   <span class="rowlabel">scanning…</span>
                 } @else if (r.files) {
-                  <div class="rowbar">
-                    <div class="rowfill" [style.width.%]="r.files ? ((r.done ?? 0) / r.files * 100) : 0"></div>
+                  @let cov = coverage(r);
+                  <!-- Coverage, exactly as the bars above measure it: tagged
+                       images out of taggable images. The old bar here divided
+                       index_status='done' by every row, videos included, and
+                       so disagreed with those bars by an order of magnitude. -->
+                  <div class="rowbar" [title]="coverageTitle(r)">
+                    <div class="rowfill" [style.width.%]="cov.pct"></div>
                   </div>
-                  <span class="rowlabel" [class.warn]="(r.pending || 0) > 0" data-testid="root-indexed">{{ r.done | number }}/{{ r.files | number }}</span>
+                  <span class="rowlabel" [class.warn]="cov.done < cov.total"
+                        [title]="coverageTitle(r)" data-testid="root-indexed">{{ cov.done | number }}/{{ cov.total | number }}</span>
                   <div class="rowchips">
-                    @if ((r.pending || 0) > 0) { <span class="chip pend">{{ r.pending }} pending</span> }
+                    @if ((r.queued || 0) > 0) { <span class="chip pend" title="files under this folder with a job still queued or running">{{ r.queued }} queued</span> }
+                    @if ((r.videos || 0) > 0) { <span class="chip vid" title="videos are browse/search-only — scanned and searchable, never tagged or described, so they are not counted in this ratio">{{ r.videos }} video</span> }
                     @if ((r.errors || 0) > 0) {
                       <button class="chip err-btn" (click)="toggleErrors(r)" data-testid="root-errors-toggle">
                         {{ r.errors }} err {{ errorsOpenFor() === r.id ? '▴' : '▾' }}
@@ -269,29 +257,6 @@ import { LibraryService } from './library.service';
        gets its own fixed-width, ellipsis-truncated box -- otherwise the bar
        itself visibly stretches and shrinks as filenames of different lengths
        come and go, which reads as the whole thing jittering side to side. */
-    .ovbar { display: flex; align-items: center; gap: 10px; margin: 14px 0 2px; }
-    .ovtrack { position: relative; flex: 1; height: 10px; border-radius: 999px;
-               background: var(--bg-2); overflow: hidden; min-width: 0; }
-    .ovfill { position: absolute; inset: 0 auto 0 0; background: var(--accent);
-              border-radius: 999px; transition: width .3s; }
-    .ovtrack.paused .ovfill { background: #d97706; opacity: .6; }
-    .ovlabel { flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
-               font-size: 12px; color: var(--fg-dim); white-space: nowrap;
-               font-variant-numeric: tabular-nums; }
-    .ovcurrent { display: inline-block; max-width: 260px; overflow: hidden;
-                 text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
-    @media (max-width: 900px) { .ovcurrent { max-width: 120px; } }
-    .ovsplit { display: flex; gap: 18px; margin: 0 0 10px; flex-wrap: wrap; }
-    .ovmini { display: flex; align-items: center; gap: 6px; }
-    .ovminilabel { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
-    /* Explicit border, not just a fill colour: an empty track on var(--bg-2)
-       was invisible against the page on the dark theme. */
-    .ovminitrack { position: relative; width: 88px; height: 8px; border-radius: 999px;
-                   background: var(--bg); overflow: hidden; border: 1px solid var(--border); }
-    .ovminifill { position: absolute; inset: 0 auto 0 0; background: var(--accent);
-                  border-radius: 999px; transition: width .3s; }
-    .ovmininum { font-size: 10px; color: var(--fg-dim); white-space: nowrap;
-                 font-variant-numeric: tabular-nums; }
 
     /* Per-root indexed column: a compact fill bar instead of bare numbers,
        with pending/error state as small chips underneath -- not stacked text. */
@@ -315,6 +280,10 @@ import { LibraryService } from './library.service';
     .chip.err-btn { cursor: pointer; background: color-mix(in srgb, #ef4444 22%, var(--bg));
                     color: #fca5a5; border-color: color-mix(in srgb, #ef4444 55%, transparent); }
     .chip.err-btn:hover { background: color-mix(in srgb, #ef4444 34%, var(--bg)); }
+    /* Neutral, not a warning colour: a folder holding videos is a normal
+       library, not a problem — the chip only explains why they are absent
+       from the ratio beside it. */
+    .chip.vid { background: var(--bg-2); color: var(--fg-dim); border-color: var(--border); }
 
     .error-panel td { padding: 10px 8px 14px; background: var(--bg-2); }
     .errlist { display: flex; flex-direction: column; gap: 6px; }
@@ -368,27 +337,34 @@ export class SourcesComponent {
   readonly loadError = signal('');
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Per-stage rows (§12 observability), all counted in files out of the same
-  // files_total so they are directly comparable. Derived from stored output
-  // rather than the jobs table — finished jobs are never deleted, so a
-  // job-ratio bar would sit near 100% forever and show nothing. Stages the
-  // backend didn't report, or that are switched off, are omitted instead of
-  // being drawn permanently empty.
-  ovCategories(p: Progress): { label: string; title: string; done: number; total: number; pct: number }[] {
-    const total = p.files_total;
-    if (!total) return [];
-    const rows: { label: string; title: string; done: number; total: number; pct: number }[] = [];
-    const add = (label: string, title: string, done: number | undefined) => {
-      if (done == null) return;
-      rows.push({ label, title, done, total, pct: Math.round((done / total) * 100) });
-    };
-    // No 'Index' row: the ovbar directly above already shows exactly that
-    // ("● indexing 16/7,520"), and repeating the same numbers beneath it
-    // reads as a rendering bug rather than as extra detail.
-    add('Scan', 'files read from disk (hash, dimensions, thumbnail)', p.scan_done);
-    if (p.facets?.['wd14'] !== false) add('Tags', 'WD14 general/character tagging', p.tag_done);
-    if (p.facets?.['caption'] !== false) add('Caption', 'natural-language description', p.caption_done);
-    return rows;
+  // Library-wide progress is not computed here at all — <app-index-status>
+  // owns it, from LibraryService, for every page. What remains is the
+  // per-root column, which must measure the same way those bars do.
+
+  /** One root's coverage, on the same terms as the library-wide Tags bar:
+   * tagged images out of taggable images. Falls back to scan coverage when
+   * tagging is switched off, so the column still means something rather than
+   * sitting at 0% — and to the whole-file count on an older daemon that does
+   * not send the split fields. */
+  coverage(r: Root): { done: number; total: number; pct: number } {
+    const taggable = r.analyzable ?? r.files;
+    const wd14On = this.lib.progress()?.facets?.['wd14'] !== false;
+    const done = wd14On ? (r.tagged ?? 0) : (r.scanned ?? 0);
+    const total = wd14On ? taggable : r.files;
+    return { done, total, pct: total ? Math.min(100, (done / total) * 100) : 0 };
+  }
+
+  coverageTitle(r: Root): string {
+    const parts = [`${(r.scanned ?? 0).toLocaleString()}/${r.files.toLocaleString()} scanned`];
+    if (r.tagged != null) {
+      parts.push(`${r.tagged.toLocaleString()}/${(r.analyzable ?? r.files).toLocaleString()} tagged`);
+    }
+    if (r.captioned != null) {
+      parts.push(`${r.captioned.toLocaleString()}/${(r.analyzable ?? r.files).toLocaleString()} described`);
+    }
+    if (r.videos) parts.push(`${r.videos.toLocaleString()} video (scan only)`);
+    if (r.queued) parts.push(`${r.queued.toLocaleString()} file(s) still queued`);
+    return parts.join('\n');
   }
 
   constructor() {

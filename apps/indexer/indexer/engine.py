@@ -200,6 +200,161 @@ def resolve_onnx_providers(available: list[str] | None = None,
     return picked
 
 
+_DLL_DIRS_ADDED = False
+
+
+def ensure_gpu_libs(providers: list[str] | None = None) -> None:
+    """Make the pip-installed NVIDIA CUDA/cuDNN DLLs loadable by onnxruntime.
+
+    onnxruntime-gpu's ``onnxruntime_providers_cuda.dll`` links against
+    ``cublasLt64_12.dll``/``cudnn64_9.dll``, which ship inside the separate
+    ``nvidia-*-cu12`` wheels under ``nvidia/<lib>/bin/``. Nothing puts those
+    directories on the DLL search path on their own. Torch does it as a side
+    effect of being imported -- which is why this bug hid for so long: with
+    CLIP or captioning enabled, ``import torch`` ran during daemon preload and
+    onnxruntime inherited a working search path by luck. Turn both of those
+    facets off, leaving WD14/OCR, and the provider silently fails to load.
+
+    "Silently" is the whole problem. onnxruntime does not raise; it logs to
+    stderr and hands back a session bound to CPUExecutionProvider, while
+    ``get_available_providers()`` -- which is what the Models screen reports
+    from -- keeps listing CUDA, because that only ever meant "this build was
+    compiled with CUDA support", never "CUDA loaded". The app therefore
+    claimed GPU while measuring, on this machine's WD14 EVA02 model, 0.84s
+    per image against 0.041s once the DLLs resolve: a 20x slowdown that
+    reported itself as working correctly.
+
+    Registering the directories is necessary but *not* sufficient, which is
+    the first trap here: ``os.add_dll_directory`` only affects loads that go
+    through ``LoadLibraryEx`` with the search-path flags, and onnxruntime's
+    provider bridge does not, so directory registration alone leaves the
+    failure exactly as it was (measured: still CPU, still 0.84s/image). The
+    DLLs have to already be resident in the process; once they are, the
+    provider bridge resolves them from the loaded-module list without
+    searching at all.
+
+    The second trap is *which copy* becomes resident. Torch ships its own
+    ``torch/lib/{cublas64_12,cudnn64_9,...}.dll`` — the same file names as the
+    standalone ``nvidia-*-cu12`` wheels, at whatever versions that torch build
+    was compiled against. Windows resolves a DLL name to the copy already
+    loaded, so preloading the wheel copies first silently rebinds torch onto
+    them, and a later ``import torch`` dies with ``OSError(22, 'The specified
+    procedure could not be found.', None, 127)`` — a missing export, because
+    the versions do not match. Doing that broke captioning outright on a
+    machine where it had been working.
+
+    So: when torch is installed, torch owns the CUDA runtime. Importing it is
+    both sufficient (its DLL set satisfies the same names onnxruntime needs)
+    and necessary (nothing else may load a competing copy first). Only when
+    torch is absent or CPU-only — a library running WD14/OCR without ever
+    installing the CLIP/captioning dependencies, which is exactly the
+    configuration where this bug bit and had no other workaround — do we load
+    the standalone wheels ourselves.
+
+    Only runs when CUDA is actually on the table, so a CPU-only or DirectML
+    machine pays nothing and loads no CUDA runtime it will never use.
+    Idempotent and never fatal.
+    """
+    global _DLL_DIRS_ADDED
+    if _DLL_DIRS_ADDED or not any("CUDA" in p for p in (providers or ["CUDA"])):
+        return
+    _DLL_DIRS_ADDED = True
+    import os
+    if not hasattr(os, "add_dll_directory"):   # non-Windows: rpath handles it
+        return
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Torch has loaded its own self-consistent CUDA/cuDNN set; that is
+            # all onnxruntime needs, and anything we added on top could only
+            # conflict with it.
+            return
+    except Exception:
+        pass
+    import ctypes
+    from pathlib import Path
+    from . import config
+    roots = [config.RUNTIME_PACKAGES_DIR]
+    try:
+        import site
+        roots.extend(Path(p) for p in site.getsitepackages())
+    except Exception:
+        pass
+    libs: list[Path] = []
+    for root in roots:
+        try:
+            for bindir in sorted((Path(root) / "nvidia").glob("*/bin")):
+                dlls = sorted(bindir.glob("*.dll"))
+                if dlls:
+                    os.add_dll_directory(str(bindir))
+                    libs.extend(dlls)
+        except Exception:
+            continue
+    # Two passes: these libraries depend on each other (cudnn's kernels on
+    # cublas, cublas on cublasLt), and a single alphabetical pass would fail
+    # whichever ones happen to be reached before their dependency. Anything
+    # still failing on the second pass is genuinely unusable — leave it to
+    # onnxruntime to fall back rather than raising here.
+    pending = libs
+    for _ in range(2):
+        retry = []
+        for lib in pending:
+            try:
+                ctypes.CDLL(str(lib))
+            except OSError:
+                retry.append(lib)
+        if not retry:
+            break
+        pending = retry
+
+
+# What each runtime *actually* bound to, recorded at session/model creation
+# rather than inferred from what was requested. See ensure_gpu_libs() for why
+# the requested list is not evidence of anything.
+_ACTIVE_DEVICES: dict[str, str] = {}
+_EP_LABELS = {
+    "CUDAExecutionProvider": "CUDA",
+    "TensorrtExecutionProvider": "TensorRT",
+    "DmlExecutionProvider": "DirectML",
+    "OpenVINOExecutionProvider": "OpenVINO",
+    "CPUExecutionProvider": "CPU",
+}
+
+
+def note_onnx_session(session) -> None:
+    """Record the provider onnxruntime really bound for a freshly-built session."""
+    try:
+        providers = list(session.get_providers())
+    except Exception:
+        return
+    accelerated = [p for p in providers if p != "CPUExecutionProvider"]
+    _ACTIVE_DEVICES["onnx"] = (_EP_LABELS.get(accelerated[0], accelerated[0])
+                               if accelerated else "CPU")
+
+
+def note_torch_device(device: str) -> None:
+    """Record the device a torch-backed engine (CLIP, captioning) loaded onto."""
+    text = str(device or "cpu")
+    _ACTIVE_DEVICES["torch"] = "CUDA" if text.startswith("cuda") else text.upper()
+
+
+def active_device_label() -> str | None:
+    """Short "what is doing the work right now" string for the UI (§12).
+
+    Reports the two runtimes separately because they genuinely can differ --
+    and did, on the machine this was diagnosed on: torch on CUDA, onnxruntime
+    silently on CPU. A single "GPU" badge would have gone on hiding exactly
+    the failure the user was asking about. Returns None until a model has
+    actually loaded, so the UI shows nothing rather than a guess.
+    """
+    parts = []
+    if (onnx := _ACTIVE_DEVICES.get("onnx")):
+        parts.append(f"tagging/OCR {onnx}")
+    if (torch_device := _ACTIVE_DEVICES.get("torch")):
+        parts.append(f"CLIP/caption {torch_device}")
+    return " · ".join(parts) or None
+
+
 def onnx_provider_options(providers: list[str],
                           npu_device_type: str = "NPU") -> list:
     """Pair provider names with the options onnxruntime needs to actually use

@@ -121,7 +121,15 @@ def _run_file_action_async(action: str, path: str, file_id: int) -> dict:
                 db.upsert_file(con2, _ingest(path))
                 _worker._run_infer(con2, file_id, force=True)
             elif action == "recaption":
-                _worker._run_caption(con2, file_id)
+                # Always fresh: this is the preview pane's explicit
+                # "↻ re-Description" click, the same "redo it, right now"
+                # guarantee reindex/re-Tag give above and below — a cache hit
+                # silently no-op'ing this specific click would look like the
+                # button did nothing. Bulk sweeps (recaption_all, a
+                # caption-variant switch) go through the queued kind='caption'
+                # job instead, which defaults to force=False and benefits
+                # from the cache. See _run_caption's docstring.
+                _worker._run_caption(con2, file_id, force=True)
             else:
                 _worker._run_tag(con2, file_id)
             _emit({"event": "file_done", "action": action, "path": path, "ok": True})
@@ -875,6 +883,11 @@ def _preload_model_runtime(model: str) -> None:
     and automatic indexing from remaining indeterminate forever.
     """
     import importlib
+    from . import engine as _engine
+    # Before any onnxruntime import, so the CUDA provider's own dependencies
+    # are resolvable whichever facet happens to load first — see
+    # engine.ensure_gpu_libs() for what used to silently go wrong here.
+    _engine.ensure_gpu_libs(_engine.detect_hardware()["onnx_providers"])
     modules = {
         "ocr": ("numpy", "onnxruntime", "rapidocr_onnxruntime"),
         "wd14": ("numpy", "onnxruntime"),

@@ -19,7 +19,7 @@ from . import heartbeat
 from . import status
 from .config import OCR_ENGINE
 from .imgio import open_oriented
-from .ingest import ingest
+from .ingest import ingest, is_video
 
 
 # CUDA/Torch/ONNX sessions must not be driven concurrently by the background
@@ -32,7 +32,20 @@ def _image_is_readable(path: str) -> bool:
 
     A zero-byte cloud placeholder or corrupt source is not repaired by retrying,
     so finish the facet job normally and leave one actionable line in the log.
+
+    Videos are answered from the extension alone, without touching the file.
+    They are browse/search-only by design (§12), so the answer is known in
+    advance -- and *asking* is ruinously expensive: open_oriented() hands
+    anything under its size guard to OpenCV, which reads the whole file into
+    memory before it can confirm that a container it cannot demux is still a
+    container it cannot demux. Per file that is a few hundred MB of pointless
+    I/O; across a library's worth of queued jobs it is tens of GB, and it
+    stalls the single worker thread the entire time. It also kept one
+    "skipping facets" line per video in the Sources log, drowning the real
+    errors it exists to show.
     """
+    if is_video(path):
+        return False
     try:
         with open_oriented(path):
             return True
@@ -63,8 +76,11 @@ def run_job(con, job) -> None:
             db.upsert_file(con, ing)
             # Chain inference (kind router + WD14 + OCR; CLIP/faces later) as its
             # own job so ingest stays cheap and inference can batch/downgrade.
-            if any(config.facet_enabled(con, facet) for facet in
-                   ("ocr", "wd14", "clip", "faces", "caption")):
+            # Never for a video: no facet runs on one, so the chained job's only
+            # job would be to prove that again, per file, at the cost described
+            # in _image_is_readable().
+            if not is_video(p) and any(config.facet_enabled(con, facet) for facet in
+                                       ("ocr", "wd14", "clip", "faces", "caption")):
                 db.enqueue_job(con, fid, "infer", priority=int(job["priority"] or 0))
         elif kind == "infer":
             _run_infer(con, fid)
@@ -72,6 +88,11 @@ def run_job(con, job) -> None:
             _run_clip(con, fid)
         elif kind == "caption":
             _run_caption(con, fid)
+        elif kind == "caption_force":
+            # recaption_all()/recaption_root() -- a deliberate "regenerate
+            # every caption" click. Must bypass the per-model cache, or an
+            # unchanged active model would turn the click into a no-op.
+            _run_caption(con, fid, force=True)
         elif kind == "tag":
             _run_tag(con, fid)
         db.set_job_state(con, job["id"], "done")
@@ -158,10 +179,14 @@ def _run_infer_locked(con, fid: int, *, force: bool = False) -> None:
         db.write_ocr(con, fid, regions)
 
     # Natural-language caption (§11) -> files.caption -> FTS. Model id is
-    # swappable per library (settings 'caption_model').
+    # swappable per library (settings 'caption_model'). `force` threads
+    # through exactly like the wd14/faces facets above it: False for the
+    # ordinary per-file 'infer' chain (so a bulk backlog can skip files
+    # already captioned by the active model), True only for an explicit
+    # single-file re-index.
     if config.facet_enabled(con, "caption"):
         heartbeat.beat()
-        _run_caption_facet(con, fid, path, _engine, device)
+        _run_caption_facet(con, fid, path, _engine, device, force=force)
 
 
 def _run_wd14_facet(con, fid: int, path: str, engine_config, providers,
@@ -268,10 +293,21 @@ def _run_tag(con, fid: int) -> None:
                          force=True)
 
 
-def _run_caption(con, fid: int) -> None:
-    """Caption-only regenerate, e.g. "↻ re-Description" in the preview pane or
-    after switching the caption model variant. Mirrors _run_clip: does not
-    rerun WD14/OCR/faces/clip, just the one facet that changed."""
+def _run_caption(con, fid: int, *, force: bool = False) -> None:
+    """Caption-only regenerate. Mirrors _run_clip: does not rerun
+    WD14/OCR/faces/clip, just the one facet that changed.
+
+    Two different callers need two different answers to "redo it anyway?":
+    the queued kind='caption' job (bulk sweeps -- recaption_all/_root,
+    enqueue_missing_captions, a caption-variant switch backfilling existing
+    files) wants force=False, the default, so a file the active model has
+    already captioned is served from cache instead of paying real GPU
+    seconds for a result that would come out the same. The preview pane's
+    "↻ re-Description" button (daemon.py's `recaption` single-file action)
+    passes force=True explicitly -- that click means "redo this one, right
+    now," and a cache hit silently no-op'ing it would look like the button
+    did nothing.
+    """
     with INFERENCE_LOCK:
         row = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
         if row is None or not os.path.exists(row["path"]):
@@ -280,13 +316,38 @@ def _run_caption(con, fid: int) -> None:
             return
         from . import engine as engine_config
         cfg = engine_config.get_engine_config(con)
-        _run_caption_facet(con, fid, row["path"], engine_config, cfg["torch_device"])
+        _run_caption_facet(con, fid, row["path"], engine_config, cfg["torch_device"],
+                            force=force)
 
 
-def _run_caption_facet(con, fid: int, path: str, engine_config, device: str) -> None:
-    status.set(f"captioning · {os.path.basename(path)}")
+def _run_caption_facet(con, fid: int, path: str, engine_config, device: str,
+                        *, force: bool = False) -> None:
+    """Natural-language caption for one file.
+
+    Skips generation (no model load, no GPU/CPU work) when this file was
+    already captioned by the *currently active* caption variant before --
+    restoring that prior result from facet_model_cache, exactly mirroring
+    _run_wd14_facet's per-model cache and for the same reason: switching the
+    caption variant in Settings and switching back restores each model's own
+    caption instantly, and a bulk sweep across a large library only pays for
+    inference on files that genuinely need it. Before this cache existed, a
+    "↻ Reindex" or a caption-variant switch regenerated every caption in the
+    library from scratch regardless of whether the active model had already
+    produced one -- on a library with several thousand images that is real
+    GPU minutes to hours spent reproducing output byte-for-identical to what
+    was already stored. `force=True` (the preview pane's single-file
+    "↻ re-Description") always bypasses the cache, then refreshes it.
+    """
     from .models import caption
     capv = engine_config.selected_variant(con, "caption") or {}
+    variant_id = capv.get("id", "default")
+    if not force:
+        cached = db.get_caption_cache(con, fid, variant_id)
+        if cached is not None:
+            if cached:
+                db.set_caption(con, fid, cached)
+            return
+    status.set(f"captioning · {os.path.basename(path)}")
     model_id = (capv.get("model_id") or db.get_setting(con, "caption_model")
                 or config.CAPTION_MODEL)
     cap_engine = caption.get_engine(
@@ -311,6 +372,10 @@ def _run_caption_facet(con, fid: int, path: str, engine_config, device: str) -> 
     text = cap_engine.caption(path)
     if text:
         db.set_caption(con, fid, text)
+    # Cache the outcome even when empty, so a file the model genuinely has
+    # nothing to say about isn't retried at full model cost on every future
+    # reindex -- only a load failure above (which raises) skips this.
+    db.set_caption_cache(con, fid, variant_id, text or "")
 
 
 def _run_clip(con, fid: int) -> None:

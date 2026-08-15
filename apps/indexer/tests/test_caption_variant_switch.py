@@ -65,9 +65,14 @@ def run() -> int:
         "SELECT id FROM files WHERE filename='uncaptioned.png'").fetchone()["id"]
     db.set_caption(con, fid_captioned, "a photo of something blue")
 
-    def queued_caption_jobs():
+    def queued_caption_jobs(kind="caption"):
+        # 'caption' (passive backfill, cache-aware) and 'caption_force' (an
+        # explicit "regenerate everything" click, always bypasses the cache —
+        # see test_caption_cache.py) are deliberately different job kinds;
+        # keep them distinct here so a dispatch mistake shows up as a kind
+        # mismatch, not just as "a job got queued somehow".
         return {r["file_id"] for r in con.execute(
-            "SELECT file_id FROM jobs WHERE kind='caption' AND state='queued'")}
+            "SELECT file_id FROM jobs WHERE kind=? AND state='queued'", (kind,))}
 
     db.set_setting(con, "caption_variant", "blip-base")
     result = daemon._set_variant(con, "caption", "blip-large")
@@ -89,12 +94,14 @@ def run() -> int:
 
     # Clear the queue so recaption_all's count is unambiguous.
     with con:
-        con.execute("DELETE FROM jobs WHERE kind='caption'")
+        con.execute("DELETE FROM jobs WHERE kind IN ('caption', 'caption_force')")
 
     forced = db.recaption_all(con)
     check(forced == 2, f"the explicit 'Regen all captions' action queues every file (got {forced})")
-    check({fid_captioned, fid_uncaptioned} <= queued_caption_jobs(),
-          "recaption_all queues both the captioned and uncaptioned file")
+    check({fid_captioned, fid_uncaptioned} <= queued_caption_jobs("caption_force"),
+          "recaption_all queues both the captioned and uncaptioned file, as kind='caption_force' "
+          "so the forced redo cannot be quietly skipped by the per-model cache "
+          "(see test_caption_cache.py)")
 
     print()
     if fails:
