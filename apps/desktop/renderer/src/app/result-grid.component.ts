@@ -60,6 +60,7 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
             <div class="cell kind" [style.flex]="colFlex('kind')" [title]="f.image_kind || ''">{{ isVideo(f) ? '▶ video' : (f.image_kind || '—') }}</div>
             <div class="cell dim" [style.flex]="colFlex('dim')">{{ f.width }}×{{ f.height }}</div>
             <div class="cell size" [style.flex]="colFlex('size')">{{ sizeKb(f) }}</div>
+            <div class="cell date" [style.flex]="colFlex('date')" [title]="modified(f)">{{ dateShort(f) }}</div>
             <div class="filler"></div>
           </div>
         </cdk-virtual-scroll-viewport>
@@ -160,7 +161,20 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
     .resizer:hover, .resizer:active { background: var(--accent); opacity: .45; }
     .gridbody { position: relative; flex: 1; min-height: 0; overflow: hidden; }
     .viewport { height: 100%; user-select: none; }
-    .row { display: flex; align-items: center; height: 24px; cursor: pointer; font-size: 12px;
+    /* CDK positions *cdkVirtualFor rows inside an absolutely-positioned
+       .cdk-virtual-scroll-content-wrapper (left:0; right:0; no explicit
+       width). That normally resolves to 100% of the viewport, but when the
+       window narrows, the wrapper's own width computation lags behind the
+       resize (it doesn't re-run until the next scroll/render pass) and rows
+       keep rendering at the previous, wider size — overflowing past the
+       viewport's actual (already-shrunk) edge with Kind/Dimensions/Size
+       pushed off past a horizontal scrollbar while the header row above,
+       which is plain block layout and always tracks the real width, looks
+       fine. Forcing both to 100%/border-box removes the stale intermediate
+       width entirely instead of chasing the resize timing. */
+    ::ng-deep .cdk-virtual-scroll-content-wrapper { width: 100%; box-sizing: border-box; }
+    .row { display: flex; align-items: center; height: 24px; width: 100%; box-sizing: border-box;
+           cursor: pointer; font-size: 12px;
            border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
     .row:hover { background: var(--bg-2); }
     .row.sel { background: var(--sel); }
@@ -177,6 +191,7 @@ import { FileDetail, FileRow, SearchOpts, TagRow, getApi } from './api';
     .kind { min-width: 40px; }
     .dim  { color: var(--fg-dim); min-width: 40px; }
     .size { min-width: 50px; color: var(--fg-dim); text-align: right; }
+    .date { min-width: 50px; color: var(--fg-dim); }
     /* Absorbs whatever width is left after the 5 real (now all independently
        resizable, fixed-width) columns, so the row still fills the panel with
        no dead space or horizontal scroll — without forcing Size itself to
@@ -319,6 +334,7 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
     { key: 'kind', label: 'Kind', cls: 'kind' },
     { key: 'dim', label: 'Dimensions', cls: 'dim' },
     { key: 'size', label: 'Size', cls: 'size' },
+    { key: 'date', label: 'Date', cls: 'date' },
   ];
 
   // All 5 columns are independently resizable, fixed-width; a trailing
@@ -327,7 +343,7 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
   // real column (previously Size) to stretch and absorb it, which made that
   // column balloon to hundreds of pixels wider than its content ever needed.
   private static readonly DEFAULT_WIDTHS: Record<string, number> = {
-    name: 260, folder: 340, kind: 80, dim: 100, size: 90,
+    name: 260, folder: 340, kind: 80, dim: 100, size: 90, date: 110,
   };
   private static readonly MIN_COL_WIDTH = 40;
   private static readonly STORAGE_KEY = 'imageTagger.resultGrid.colWidths';
@@ -543,6 +559,12 @@ export class ResultGridComponent implements AfterViewChecked, OnDestroy {
 
   modified(file: FileRow): string {
     return file.mtime ? new Date(file.mtime * 1000).toLocaleString() : '—';
+  }
+
+  // Date column: date only (no time) so it fits the narrow default width;
+  // the full timestamp is still available on hover via modified()'s title.
+  dateShort(file: FileRow): string {
+    return file.mtime ? new Date(file.mtime * 1000).toLocaleDateString() : '—';
   }
 
   // Keyboard-first navigation (§8.1): ↑/↓ move the selection, Enter opens the
