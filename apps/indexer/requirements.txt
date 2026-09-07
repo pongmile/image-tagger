@@ -7,7 +7,7 @@ piexif>=1.1,<2
 # OCR is enabled by default, so its CPU runtime is part of the base install.
 # Larger WD14/CLIP/face/caption dependencies remain opt-in in the Models screen.
 rapidocr-onnxruntime==1.4.4
-onnxruntime==1.23.2
+onnxruntime==1.28.0
 
 # Semantic vector storage is a tiny CPU extension and the Models screen marks
 # it as included with the app; ship it in both development and packaged runtimes.
