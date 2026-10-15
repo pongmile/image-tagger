@@ -40,7 +40,7 @@ jobs:
             "$hash  $($file.Name)"
           }
           $lines | Set-Content -Encoding ascii apps/desktop/dist/SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: image-tagger-windows-x64
           path: |
