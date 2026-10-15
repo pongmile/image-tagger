@@ -1,6 +1,6 @@
 # M2 core (no AI yet). Model deps are added per-milestone; the app's
 # model manager installs GPU/CPU onnxruntime at first run per tier.
-watchdog>=4.0,<7
+watchdog>=6.0.0,<7
 Pillow>=10.0,<13
 piexif>=1.1,<2
 
