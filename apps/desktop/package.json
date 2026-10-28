@@ -18,8 +18,8 @@
     "better-sqlite3": "12.10.0"
   },
   "devDependencies": {
-    "electron": "41.10.3",
-    "electron-builder": "26.15.3"
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0"
   },
   "build": {
     "appId": "dev.imagetagger.app",
